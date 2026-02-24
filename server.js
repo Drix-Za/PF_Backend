@@ -1,32 +1,43 @@
-// configuracion inicial
 require("dotenv").config({ path: "backend/.env" });
 const express = require("express");
-const cors = require("cors"); 
-const Sequelize = require("sequelize");
-const { DataTypes } = require("sequelize");
+const cors = require("cors");
+const path = require("path");
+const fs = require("fs");
+
+const { Sequelize, DataTypes } = require("sequelize");
+
+// Encriptación y tokens
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
+const JWT_SECRET = process.env.JWT_SECRET || "clave_secreta_para_pruebas";
+
+// Multer
+const multer = require("multer");
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT;
 
-// inicio configuracion sequelize
+// Sequelize
 const baseOptions = {
     dialect: "postgres",
     logging: false,
+    define: {
+        freezeTableName: true,
+        timestamps: false
+    },
     dialectOptions: {
         ssl:
             process.env.DB_SSL === "true"
                 ? { require: true, rejectUnauthorized: false }
-                : false,
-    },
+                : false
+    }
 };
 
 let sequelize;
 
 if (process.env.DATABASE_URL) {
-    console.log("detectada database_url. conectando con url completa.");
     sequelize = new Sequelize(process.env.DATABASE_URL, baseOptions);
 } else {
-    console.log("database_url no encontrada. conectando con variables separadas.");
     sequelize = new Sequelize(
         process.env.DB_NAME,
         process.env.DB_USER,
@@ -34,346 +45,211 @@ if (process.env.DATABASE_URL) {
         {
             host: process.env.DB_HOST,
             port: process.env.DB_PORT,
-            dialect: "postgres",
-            logging: false,
-            dialectOptions: { ssl: false },
+            ...baseOptions
         }
     );
 }
 
-// prueba de conexion db
-async function testConnection() {
+// Test conexión
+(async () => {
     try {
         await sequelize.authenticate();
-        console.log("conectado correctamente a postgresql (sequelize)");
-    } catch (error) {
-        console.error("error al conectar con postgresql:", error.message);
+        console.log("Conectado a PostgreSQL");
+    } catch (err) {
+        console.error("Error de BD:", err.message);
     }
-}
-testConnection();
-module.exports = { sequelize, testConnection };
+})();
 
-// inicio definicion de modelos
-const Rol = sequelize.define('Rol', {
-    id_rol: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
-    nombre: { type: DataTypes.STRING(50), allowNull: false, unique: true }
-}, { tableName: 'rol', timestamps: false });
+// Modelos
+const Rol = sequelize.define("Rol", {
+    id_rol: { type: DataTypes.INTEGER, primaryKey: true },
+    nombre: DataTypes.STRING
+}, { tableName: "rol" });
 
-const TipoProducto = sequelize.define('TipoProducto', { 
-    id_tipo_producto: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
-    nombre: { type: DataTypes.STRING(50), allowNull: false, unique: true }
-}, { tableName: 'tipoproducto', timestamps: false });
+const Usuario = sequelize.define("Usuario", {
+    id_usuario: { type: DataTypes.INTEGER, primaryKey: true },
+    id_rol: DataTypes.INTEGER,
+    email: DataTypes.STRING,
+    contrasena_hash: DataTypes.STRING,
+    nombre: DataTypes.STRING,
+    apellido: DataTypes.STRING,
+    telefono: DataTypes.STRING,
+    avatar_url: DataTypes.STRING,
+    activo: DataTypes.BOOLEAN
+}, { tableName: "usuario" });
 
-const Fabricante = sequelize.define('Fabricante', { 
-    id_fabricante: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
-    nombre: { type: DataTypes.STRING(100), allowNull: false, unique: true }
-}, { tableName: 'fabricante', timestamps: false });
+const Producto = sequelize.define("Producto", {
+    id_producto: { type: DataTypes.INTEGER, primaryKey: true },
+    id_tipo_producto: DataTypes.INTEGER,
+    id_fabricante: DataTypes.INTEGER,
+    titulo: DataTypes.STRING,
+    activo: DataTypes.BOOLEAN
+}, { tableName: "producto" });
 
-const EstadoPedido = sequelize.define('EstadoPedido', {
-    id_estado_pedido: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
-    nombre: { type: DataTypes.STRING(50), allowNull: false, unique: true }
-}, { tableName: 'estadopedido', timestamps: false });
+const Pedido = sequelize.define("Pedido", {
+    id_pedido: { type: DataTypes.INTEGER, primaryKey: true },
+    id_cliente: DataTypes.INTEGER,
+    id_estado_pedido: DataTypes.INTEGER,
+    id_metodo_pago: DataTypes.INTEGER,
+    total: DataTypes.DECIMAL,
+    fecha_pedido: DataTypes.DATE
+}, { tableName: "pedido" });
 
-const MetodoPago = sequelize.define('MetodoPago', { 
-    id_metodo_pago: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
-    nombre: { type: DataTypes.STRING(50), allowNull: false, unique: true }
-}, { tableName: 'metodopago', timestamps: false });
-
-const Usuario = sequelize.define('Usuario', {
-    id_usuario: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
-    id_rol: { type: DataTypes.INTEGER, allowNull: false, references: { model: Rol, key: 'id_rol' } },
-    email: { type: DataTypes.STRING(100), allowNull: false, unique: true },
-    contrasena_hash: { type: DataTypes.STRING(255), allowNull: false },
-    nombre: { type: DataTypes.STRING(50), allowNull: false },
-    apellido: { type: DataTypes.STRING(50), allowNull: false },
-    activo: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true }
-}, { tableName: 'usuario', timestamps: false });
-
-const Producto = sequelize.define('Producto', {
-    id_producto: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
-    id_tipo_producto: { type: DataTypes.INTEGER, allowNull: false, references: { model: TipoProducto, key: 'id_tipo_producto' } },
-    id_fabricante: { type: DataTypes.INTEGER, references: { model: Fabricante, key: 'id_fabricante' } },
-    titulo: { type: DataTypes.STRING(200), allowNull: false },
-    activo: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
-}, { tableName: 'producto', timestamps: false });
-
-const Pedido = sequelize.define('Pedido', {
-    id_pedido: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
-    id_cliente: { type: DataTypes.INTEGER, allowNull: false, references: { model: Usuario, key: 'id_usuario' } },
-    id_estado_pedido: { type: DataTypes.INTEGER, allowNull: false, references: { model: EstadoPedido, key: 'id_estado_pedido' } },
-    id_metodo_pago: { type: DataTypes.INTEGER, allowNull: false, references: { model: MetodoPago, key: 'id_metodo_pago' } },
-    total: { type: DataTypes.DECIMAL(10, 2), allowNull: false },
-    fecha_pedido: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
-}, { tableName: 'pedido', timestamps: false });
-
-const Resena = sequelize.define('Resena', {
-    id_resena: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
-    id_usuario: { type: DataTypes.INTEGER, allowNull: false, references: { model: Usuario, key: 'id_usuario' } },
-    id_producto: { type: DataTypes.INTEGER, allowNull: false, references: { model: Producto, key: 'id_producto' } },
-    puntuacion: { type: DataTypes.SMALLINT, allowNull: false, validate: { min: 1, max: 5 } },
-    comentario: { type: DataTypes.TEXT },
-}, { tableName: 'resena', timestamps: false });
-
-// inicio middlewares
+// Middlewares
 app.use(cors());
 app.use(express.json());
 
-// inicio rutas crud usuario
-const API_BASE_USUARIOS = "/api/usuarios";
+// Ubicación de las imágenes
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-// get todos los usuarios
-app.get(API_BASE_USUARIOS, async (req, res) => {
+// Autenticación tokens
+const authMiddleware = (req, res, next) => {
+    const header = req.headers.authorization;
+    if (!header) return res.status(401).json({ error: "Token requerido" });
+
+    const token = header.split(" ")[1];
     try {
-        const usuarios = await Usuario.findAll({
-            attributes: ['id_usuario', 'id_rol', 'email', 'nombre', 'apellido', 'activo']
-        });
-        res.json(usuarios);
-    } catch (err) {
-        console.error("error al obtener usuarios:", err.message);
-        res.status(500).json({ error: "error al obtener usuarios" });
+        req.user = jwt.verify(token, JWT_SECRET);
+        next();
+    } catch {
+        res.status(401).json({ error: "Token inválido" });
     }
-});
+};
 
-// post nuevo usuario
-app.post(API_BASE_USUARIOS, async (req, res) => {
-    const { id_rol, email, contrasena_hash, nombre, apellido } = req.body;
-
-    if (!email || !contrasena_hash || !nombre || !apellido || !id_rol) {
-        return res.status(400).json({ error: 'faltan campos obligatorios: email, contrasena_hash, nombre, apellido, id_rol.' });
-    }
-
+// Rol
+const requireAdmin = async (req, res, next) => {
     try {
-        const nuevo = await Usuario.create({
-            id_rol,
-            email: email.trim(),
-            contrasena_hash,
-            nombre: nombre.trim(),
-            apellido: apellido.trim(),
-        });
-        res.status(201).json({
-            id_usuario: nuevo.id_usuario,
-            email: nuevo.email,
-            nombre: nuevo.nombre,
-            activo: nuevo.activo
-        });
-    } catch (err) {
-        console.error("error al añadir usuario:", err.message);
-        if (err.name === 'SequelizeUniqueConstraintError') {
-            return res.status(409).json({ error: "el email ya esta registrado." });
+        // 1. Se busca el usuario al que pertenece el token
+        const usuario = await Usuario.findByPk(req.user.id_usuario);
+        
+        if (!usuario) {
+            return res.status(401).json({ error: "Usuario no encontrado" });
         }
-        res.status(500).json({ error: "error al añadir usuario" });
+
+        // 2. Verificación de rol por id: 
+        // 3 = Administrador, 2 = Gerente de Operaciones
+        if (usuario.id_rol === 3 || usuario.id_rol === 2) {
+            return next(); // Tiene permiso, adelante.
+        }
+
+        // 3. Si es id_rol 1 (Cliente) u otro, bloqueamos
+        return res.status(403).json({ error: "Acceso denegado: Se requieren permisos de administrador" });
+    } catch (error) {
+        console.error("Error en requireAdmin:", error);
+        res.status(500).json({ error: "Error interno al validar permisos" });
+    }
+};
+
+// Multer
+const uploadDir = path.join(__dirname, "uploads/perfiles");
+if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+    destination: (_, __, cb) => cb(null, uploadDir),
+    filename: (req, file, cb) => {
+        const ext = path.extname(file.originalname);
+        cb(null, `user_${req.user.id_usuario}_${Date.now()}${ext}`);
     }
 });
 
-// delete usuario por id
-app.delete(`${API_BASE_USUARIOS}/:id`, async (req, res) => {
-    const id = parseInt(req.params.id);
-    if (isNaN(id)) return res.status(400).json({ error: "id de usuario no valido." });
+const upload = multer({ storage });
 
-    try {
-        const eliminados = await Usuario.destroy({ where: { id_usuario: id } });
-        if (!eliminados)
-            return res.status(404).json({ error: "usuario no encontrado." });
-        res.status(204).send();
-    } catch (err) {
-        console.error("error al eliminar usuario:", err.message);
-        res.status(500).json({ error: "error al eliminar usuario" });
-    }
+// Usuarios
+app.get("/api/usuarios", authMiddleware, requireAdmin, async (req, res) => {
+    const usuarios = await Usuario.findAll({
+        attributes: ["id_usuario", "email", "nombre", "apellido", "activo", "id_rol", "avatar_url"]
+    });
+    res.json(usuarios);
 });
 
-// put (actualizar estado o datos) usuario por id
-app.put(`${API_BASE_USUARIOS}/:id`, async (req, res) => {
-    const id = parseInt(req.params.id);
-    const { activo } = req.body;
+app.get("/api/usuarios/:id", authMiddleware, requireAdmin, async (req, res) => {
+    const usuario = await Usuario.findByPk(req.params.id);
+    if (!usuario) return res.status(404).json({ error: "Usuario no encontrado" });
+    res.json(usuario);
+});
 
-    if (isNaN(id)) return res.status(400).json({ error: "id de usuario no valido." });
-    if (typeof activo !== "boolean")
-        return res.status(400).json({ error: '"activo" debe ser booleano.' });
+// Login
+app.post("/api/login", async (req, res) => {
+    const { email, contrasena } = req.body;
 
     try {
-        const [filas, [actualizado]] = await Usuario.update(
-            { activo },
-            { where: { id_usuario: id }, returning: true }
+        const usuario = await Usuario.findOne({ where: { email } });
+        if (!usuario) return res.status(401).json({ error: "Credenciales inválidas" });
+
+        const ok = await bcrypt.compare(contrasena, usuario.contrasena_hash);
+        if (!ok) return res.status(401).json({ error: "Credenciales inválidas" });
+
+        const token = jwt.sign(
+            { id_usuario: usuario.id_usuario },
+            JWT_SECRET,
+            { expiresIn: "2h" }
         );
 
-        if (filas === 0)
-            return res.status(404).json({ error: "usuario no encontrado." });
-
-        res.json({
-            id_usuario: actualizado.id_usuario,
-            email: actualizado.email,
-            nombre: actualizado.nombre,
-            activo: actualizado.activo
-        });
-    } catch (err) {
-        console.error("error al actualizar usuario:", err.message);
-        res.status(500).json({ error: "error al actualizar usuario" });
+        res.json({ token });
+    } catch {
+        res.status(500).json({ error: "Error en login" });
     }
 });
 
-// inicio rutas crud producto
-const API_BASE_PRODUCTOS = "/api/productos";
+// Perfil
+app.put(
+    "/api/perfil",
+    authMiddleware,
+    upload.single("avatar"),
+    async (req, res) => {
+        try {
+            const { nombre, apellido, telefono } = req.body;
 
-// get todos los productos
-app.get(API_BASE_PRODUCTOS, async (req, res) => {
-    try {
-        const productos = await Producto.findAll();
-        res.json(productos);
-    } catch (err) {
-        console.error("error al obtener productos:", err.message);
-        res.status(500).json({ error: "error al obtener productos" });
+            const data = { nombre, apellido, telefono };
+            if (req.file) {
+                data.avatar_url = `/uploads/perfiles/${req.file.filename}`;
+            }
+
+            await Usuario.update(data, {
+                where: { id_usuario: req.user.id_usuario }
+            });
+
+            const usuarioActualizado = await Usuario.findByPk(req.user.id_usuario, {
+                attributes: ["id_usuario", "nombre", "apellido", "telefono", "avatar_url", "email", "id_rol"]
+            });
+
+            res.json(usuarioActualizado);
+        } catch (err) {
+            console.error(err);
+            res.status(500).json({ error: "Error actualizando perfil" });
+        }
     }
+);
+
+// Productos
+app.get("/api/productos", async (_, res) => {
+    res.json(await Producto.findAll());
 });
 
-// post nuevo producto
-app.post(API_BASE_PRODUCTOS, async (req, res) => {
-    const { id_tipo_producto, id_fabricante, titulo } = req.body;
-
-    if (!id_tipo_producto || !titulo) {
-        return res.status(400).json({ error: 'faltan campos obligatorios: id_tipo_producto y titulo.' });
-    }
-
-    try {
-        const nuevo = await Producto.create({
-            id_tipo_producto,
-            id_fabricante: id_fabricante || null,
-            titulo: titulo.trim(),
-            activo: true
-        });
-        res.status(201).json(nuevo);
-    } catch (err) {
-        console.error("error al añadir producto:", err.message);
-        res.status(500).json({ error: "error al añadir producto" });
-    }
+app.get("/api/productos/:id", authMiddleware, requireAdmin, async (req, res) => {
+    const producto = await Producto.findByPk(req.params.id);
+    if (!producto) return res.status(404).json({ error: "Producto no encontrado" });
+    res.json(producto);
 });
 
-// delete producto por id
-app.delete(`${API_BASE_PRODUCTOS}/:id`, async (req, res) => {
-    const id = parseInt(req.params.id);
-    if (isNaN(id)) return res.status(400).json({ error: "id de producto no valido." });
-
-    try {
-        const eliminados = await Producto.destroy({ where: { id_producto: id } });
-        if (!eliminados)
-            return res.status(404).json({ error: "producto no encontrado." });
-        res.status(204).send();
-    } catch (err) {
-        console.error("error al eliminar producto:", err.message);
-        res.status(500).json({ error: "error al eliminar producto" });
-    }
+// Pedidos
+app.get("/api/pedidos", authMiddleware, requireAdmin, async (_, res) => {
+    res.json(await Pedido.findAll());
 });
 
-// put (actualizar estado o titulo) producto por id
-app.put(`${API_BASE_PRODUCTOS}/:id`, async (req, res) => {
-    const id = parseInt(req.params.id);
-    const { activo, titulo } = req.body;
-
-    if (isNaN(id)) return res.status(400).json({ error: "id de producto no valido." });
-    
-    const camposActualizar = {};
-    if (typeof activo === "boolean") camposActualizar.activo = activo;
-    if (typeof titulo === "string" && titulo.trim().length > 0) camposActualizar.titulo = titulo.trim();
-
-    if (Object.keys(camposActualizar).length === 0) {
-        return res.status(400).json({ error: 'debe proporcionar al menos un campo valido para actualizar (activo o titulo).' });
-    }
-
-    try {
-        const [filas, [actualizado]] = await Producto.update(
-            camposActualizar,
-            { where: { id_producto: id }, returning: true }
-        );
-
-        if (filas === 0)
-            return res.status(404).json({ error: "producto no encontrado." });
-
-        res.json(actualizado);
-    } catch (err) {
-        console.error("error al actualizar producto:", err.message);
-        res.status(500).json({ error: "error al actualizar producto" });
-    }
+app.get("/api/pedidos/:id", authMiddleware, requireAdmin, async (req, res) => {
+    const pedido = await Pedido.findByPk(req.params.id);
+    if (!pedido) return res.status(404).json({ error: "Pedido no encontrado" });
+    res.json(pedido);
 });
 
-// inicio rutas crud pedido
-const API_BASE_PEDIDOS = "/api/pedidos";
-
-// get todos los pedidos
-app.get(API_BASE_PEDIDOS, async (req, res) => {
-    try {
-        const pedidos = await Pedido.findAll();
-        res.json(pedidos);
-    } catch (err) {
-        console.error("error al obtener pedidos:", err.message);
-        res.status(500).json({ error: "error al obtener pedidos" });
-    }
-});
-
-// post nuevo pedido
-app.post(API_BASE_PEDIDOS, async (req, res) => {
-    const { id_cliente, id_estado_pedido, id_metodo_pago, total } = req.body;
-
-    if (!id_cliente || !id_estado_pedido || !id_metodo_pago || typeof total === 'undefined') {
-        return res.status(400).json({ error: 'faltan campos obligatorios: id_cliente, id_estado_pedido, id_metodo_pago, total.' });
-    }
-
-    try {
-        const nuevo = await Pedido.create({
-            id_cliente,
-            id_estado_pedido,
-            id_metodo_pago,
-            total,
-            fecha_pedido: new Date(),
-        });
-        res.status(201).json(nuevo);
-    } catch (err) {
-        console.error("error al crear pedido:", err.message);
-        res.status(500).json({ error: "error al crear pedido" });
-    }
-});
-
-// delete pedido por id
-app.delete(`${API_BASE_PEDIDOS}/:id`, async (req, res) => {
-    const id = parseInt(req.params.id);
-    if (isNaN(id)) return res.status(400).json({ error: "id de pedido no valido." });
-
-    try {
-        const eliminados = await Pedido.destroy({ where: { id_pedido: id } });
-        if (!eliminados)
-            return res.status(404).json({ error: "pedido no encontrado." });
-        res.status(204).send();
-    } catch (err) {
-        console.error("error al eliminar pedido:", err.message);
-        res.status(500).json({ error: "error al eliminar pedido" });
-    }
-});
-
-// put (actualizar estado) pedido por id
-app.put(`${API_BASE_PEDIDOS}/:id`, async (req, res) => {
-    const id = parseInt(req.params.id);
-    const { id_estado_pedido } = req.body;
-
-    if (isNaN(id)) return res.status(400).json({ error: "id de pedido no valido." });
-    if (typeof id_estado_pedido !== "number")
-        return res.status(400).json({ error: '"id_estado_pedido" debe ser un numero entero.' });
-
-    try {
-        const [filas, [actualizado]] = await Pedido.update(
-            { id_estado_pedido },
-            { where: { id_pedido: id }, returning: true }
-        );
-
-        if (filas === 0)
-            return res.status(404).json({ error: "pedido no encontrado." });
-
-        res.json(actualizado);
-    } catch (err) {
-        console.error("error al actualizar pedido:", err.message);
-        res.status(500).json({ error: "error al actualizar pedido" });
-    }
-});
-
-// inicio escucha del puerto
+// Servidor
 app.listen(port, () => {
-    console.log(`servidor backend corriendo en http://localhost:${port}`);
-    console.log(`apis disponibles: ${API_BASE_USUARIOS}, ${API_BASE_PRODUCTOS}, ${API_BASE_PEDIDOS}`);
+    console.log(`Backend activo en http://localhost:${port}`);
+    console.log(`Api de usuarios: http://localhost:${port}` + '/api/usuarios');
+    console.log(`Api de productos: http://localhost:${port}` + '/api/productos');
+    console.log(`Api de pedidos: http://localhost:${port}` + '/api/pedidos');
+    console.log('Existen otras apis pero no todas pueden soportar GET.')
 });
