@@ -437,7 +437,11 @@ const loadProductForSale = async (idProducto, transaction, lock = false) =>
   });
 
 const resolveLinePricing = async (idProducto, transaction, lock = false) => {
-  const productInstance = await loadProductForSale(idProducto, transaction, lock);
+  const productInstance = await Producto.findByPk(idProducto, {
+  include: publicProductInclude,
+  transaction,
+  lock: transaction && lock ? { level: transaction.LOCK.UPDATE, of: Producto } : undefined
+  });
 
   if (!productInstance || productInstance.activo === false) {
     const error = new Error("Producto no disponible");
@@ -450,13 +454,11 @@ const resolveLinePricing = async (idProducto, transaction, lock = false) => {
   const preferredFormatSnapshot = selectPreferredFormat(
     availableFormats.map((item) => item.get({ plain: true })),
   );
-  const preferredFormat = preferredFormatSnapshot
-    ? await VideoJuegoFormato.findByPk(preferredFormatSnapshot.id_vj_formato, {
-        include: [{ model: Formato, as: "Formato", attributes: ["id_formato", "nombre"] }],
-        transaction,
-        lock: transaction && lock ? true : undefined,
-      })
-    : null;
+  const preferredFormat = await VideoJuegoFormato.findByPk(preferredFormatSnapshot.id_vj_formato, {
+  include: [{ model: Formato, as: "Formato", attributes: ["id_formato", "nombre"] }],
+  transaction,
+  lock: transaction && lock ? { level: transaction.LOCK.UPDATE, of: VideoJuegoFormato } : undefined
+  });
 
   return {
     product,
@@ -668,7 +670,6 @@ app.post("/api/usuarios", async (req, res) => {
   }
 });
 
-// Agrega esto justo después de tu app.post("/api/usuarios")
 app.get("/api/usuarios/:id", authMiddleware, async (req, res) => {
   try {
     const idUsuario = Number(req.params.id);
@@ -682,7 +683,7 @@ app.get("/api/usuarios/:id", authMiddleware, async (req, res) => {
       return res.status(404).json({ error: "Usuario no encontrado" });
     }
 
-    // Usamos tu función serializeUser para no enviar la contraseña
+    // Usamos serializeUser para no enviar la contraseña
     res.json(serializeUser(user));
   } catch (error) {
     res.status(500).json({ error: "Error al obtener el detalle del usuario" });
@@ -905,7 +906,7 @@ app.post("/api/carrito", authMiddleware, async (req, res) => {
       const existing = await CarritoDetalle.findOne({
         where: { id_carrito: cart.id_carrito, id_producto: productId },
         transaction,
-        lock: true,
+        lock: { level: transaction.LOCK.UPDATE, of: CarritoDetalle } 
       });
 
       const nextQuantity = Number(existing?.cantidad || 0) + quantityToAdd;
