@@ -3,11 +3,10 @@ require("dotenv").config({ path: require("path").join(__dirname, ".env") });
 const express = require("express");
 const cors = require("cors");
 const compression = require("compression");
-const path = require("path");
-const fs = require("fs");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const multer = require("multer");
+const { v2: cloudinary } = require("cloudinary");
 const { Sequelize, DataTypes, Op } = require("sequelize");
 
 const JWT_SECRET = process.env.JWT_SECRET || "clave_secreta_para_pruebas";
@@ -18,6 +17,9 @@ const REVIEW_STATUS_PENDING = "Pendiente";
 const REVIEW_STATUS_APPROVED = "Aprobada";
 const REVIEW_STATUS_REJECTED = "Rechazada";
 const STAFF_ROLE_IDS = [2, 3];
+const PRODUCT_TYPE_VIDEOGAME = "videojuego";
+const PRODUCT_TYPE_ACCESSORY = "accesorio";
+const PRODUCT_TYPE_COLLECTIBLE = "coleccionable";
 
 const app = express();
 
@@ -49,13 +51,34 @@ const sequelize = process.env.DATABASE_URL
       },
     );
 
-const Rol = sequelize.define(
-  "Rol",
-  {
-    id_rol: { type: DataTypes.INTEGER, primaryKey: true },
-    nombre: DataTypes.STRING,
-  },
-  { tableName: "rol" },
+if (process.env.CLOUDINARY_URL) {
+  cloudinary.config({ secure: true });
+}
+
+const defineIdNameModel = (name, tableName, idField) =>
+  sequelize.define(
+    name,
+    {
+      [idField]: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+      nombre: DataTypes.STRING,
+    },
+    { tableName },
+  );
+
+const Rol = defineIdNameModel("Rol", "rol", "id_rol");
+const TipoProducto = defineIdNameModel("TipoProducto", "tipoproducto", "id_tipo_producto");
+const Fabricante = defineIdNameModel("Fabricante", "fabricante", "id_fabricante");
+const Genero = defineIdNameModel("Genero", "genero", "id_genero");
+const Plataforma = defineIdNameModel("Plataforma", "plataforma", "id_plataforma");
+const Formato = defineIdNameModel("Formato", "formato", "id_formato");
+const MetodoPago = defineIdNameModel("MetodoPago", "metodopago", "id_metodo_pago");
+const EstadoPedido = defineIdNameModel("EstadoPedido", "estadopedido", "id_estado_pedido");
+const Provincia = defineIdNameModel("Provincia", "provincia", "id_provincia");
+const TipoAccesorio = defineIdNameModel("TipoAccesorio", "tipoaccesorio", "id_tipo_accesorio");
+const TipoColeccionable = defineIdNameModel(
+  "TipoColeccionable",
+  "tipocoleccionable",
+  "id_tipo_coleccionable",
 );
 
 const Usuario = sequelize.define(
@@ -68,8 +91,9 @@ const Usuario = sequelize.define(
     nombre: DataTypes.STRING,
     apellido: DataTypes.STRING,
     telefono: DataTypes.STRING,
-    avatar_url: DataTypes.STRING,
+    fecha_registro: DataTypes.DATE,
     activo: DataTypes.BOOLEAN,
+    avatar_url: DataTypes.STRING,
   },
   { tableName: "usuario" },
 );
@@ -82,9 +106,11 @@ const Producto = sequelize.define(
     id_fabricante: DataTypes.INTEGER,
     titulo: DataTypes.STRING,
     descripcion: DataTypes.TEXT,
-    precio: DataTypes.DECIMAL,
-    imagen_url: DataTypes.STRING,
     activo: DataTypes.BOOLEAN,
+    fecha_creacion: DataTypes.DATE,
+    imagen_url: DataTypes.STRING,
+    precio: DataTypes.DECIMAL,
+    stock: DataTypes.INTEGER,
   },
   { tableName: "producto" },
 );
@@ -100,43 +126,69 @@ const VideoJuego = sequelize.define(
   { tableName: "videojuego" },
 );
 
-const Formato = sequelize.define(
-  "Formato",
-  {
-    id_formato: { type: DataTypes.INTEGER, primaryKey: true },
-    nombre: DataTypes.STRING,
-  },
-  { tableName: "formato" },
-);
-
-const Genero = sequelize.define(
-  "Genero",
-  {
-    id_genero: { type: DataTypes.INTEGER, primaryKey: true },
-    nombre: DataTypes.STRING,
-  },
-  { tableName: "genero" },
-);
-
-const Plataforma = sequelize.define(
-  "Plataforma",
-  {
-    id_plataforma: { type: DataTypes.INTEGER, primaryKey: true },
-    nombre: DataTypes.STRING,
-  },
-  { tableName: "plataforma" },
-);
-
 const VideoJuegoFormato = sequelize.define(
   "VideoJuegoFormato",
   {
     id_vj_formato: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
     id_videojuego: DataTypes.INTEGER,
     id_formato: DataTypes.INTEGER,
-    stock: DataTypes.INTEGER,
-    precio: DataTypes.DECIMAL,
   },
   { tableName: "videojuegoformato" },
+);
+
+const Accesorio = sequelize.define(
+  "Accesorio",
+  {
+    id_producto: { type: DataTypes.INTEGER, primaryKey: true },
+    id_tipo_accesorio: DataTypes.INTEGER,
+  },
+  { tableName: "accesorio" },
+);
+
+const Coleccionable = sequelize.define(
+  "Coleccionable",
+  {
+    id_producto: { type: DataTypes.INTEGER, primaryKey: true },
+    id_tipo_coleccionable: DataTypes.INTEGER,
+  },
+  { tableName: "coleccionable" },
+);
+
+const ImagenProducto = sequelize.define(
+  "ImagenProducto",
+  {
+    id_imagen: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    id_producto: DataTypes.INTEGER,
+    url: DataTypes.STRING,
+    es_principal: DataTypes.BOOLEAN,
+  },
+  { tableName: "imagenproducto" },
+);
+
+const Municipio = sequelize.define(
+  "Municipio",
+  {
+    id_municipio: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    id_provincia: DataTypes.INTEGER,
+    nombre: DataTypes.STRING,
+  },
+  { tableName: "municipio" },
+);
+
+const Direccion = sequelize.define(
+  "Direccion",
+  {
+    id_direccion: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    id_usuario: DataTypes.INTEGER,
+    id_municipio: DataTypes.INTEGER,
+    calle: DataTypes.STRING,
+    numero_casa: DataTypes.STRING,
+    detalle: DataTypes.TEXT,
+    es_principal: DataTypes.BOOLEAN,
+    id_provincia: DataTypes.INTEGER,
+    municipio_personalizado: DataTypes.STRING,
+  },
+  { tableName: "direccion" },
 );
 
 const CarritoCabecera = sequelize.define(
@@ -160,15 +212,6 @@ const CarritoDetalle = sequelize.define(
   { tableName: "carritodetalle" },
 );
 
-const EstadoPedido = sequelize.define(
-  "EstadoPedido",
-  {
-    id_estado_pedido: { type: DataTypes.INTEGER, primaryKey: true },
-    nombre: DataTypes.STRING,
-  },
-  { tableName: "estadopedido" },
-);
-
 const Pedido = sequelize.define(
   "Pedido",
   {
@@ -176,14 +219,16 @@ const Pedido = sequelize.define(
     id_cliente: DataTypes.INTEGER,
     id_estado_pedido: DataTypes.INTEGER,
     id_metodo_pago: DataTypes.INTEGER,
+    fecha_pedido: DataTypes.DATE,
     subtotal: DataTypes.DECIMAL,
+    costo_envio: DataTypes.DECIMAL,
     itbis: DataTypes.DECIMAL,
     total: DataTypes.DECIMAL,
     calle_envio: DataTypes.STRING,
     numero_casa_envio: DataTypes.STRING,
     municipio_envio: DataTypes.STRING,
     provincia_envio: DataTypes.STRING,
-    fecha_pedido: DataTypes.DATE,
+    id_direccion: DataTypes.INTEGER,
   },
   { tableName: "pedido" },
 );
@@ -194,8 +239,10 @@ const DetallePedido = sequelize.define(
     id_detalle_pedido: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
     id_pedido: DataTypes.INTEGER,
     id_producto: DataTypes.INTEGER,
+    id_descuento: DataTypes.INTEGER,
     cantidad: DataTypes.INTEGER,
     precio_unitario_venta: DataTypes.DECIMAL,
+    monto_descuento: DataTypes.DECIMAL,
   },
   { tableName: "detallepedido" },
 );
@@ -208,15 +255,34 @@ const Resena = sequelize.define(
     id_producto: DataTypes.INTEGER,
     puntuacion: DataTypes.INTEGER,
     comentario: DataTypes.TEXT,
+    fecha_resena: DataTypes.DATE,
     estado: DataTypes.STRING,
     id_moderador: DataTypes.INTEGER,
-    fecha_resena: DataTypes.DATE,
     fecha_moderacion: DataTypes.DATE,
   },
   { tableName: "resena" },
 );
 
+const AjusteInventario = sequelize.define(
+  "AjusteInventario",
+  {
+    id_ajuste: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    id_vj_formato: DataTypes.INTEGER,
+    id_producto: DataTypes.INTEGER,
+    id_usuario_administrador: DataTypes.INTEGER,
+    tipo_ajuste: DataTypes.STRING,
+    cantidad_ajustada: DataTypes.INTEGER,
+    fecha_ajuste: DataTypes.DATE,
+  },
+  { tableName: "ajusteinventario" },
+);
+
 Usuario.belongsTo(Rol, { foreignKey: "id_rol", as: "Rol" });
+Producto.belongsTo(TipoProducto, { foreignKey: "id_tipo_producto", as: "TipoProducto" });
+Producto.belongsTo(Fabricante, { foreignKey: "id_fabricante", as: "Fabricante" });
+Producto.hasMany(ImagenProducto, { foreignKey: "id_producto", as: "Imagenes" });
+ImagenProducto.belongsTo(Producto, { foreignKey: "id_producto", as: "Producto" });
+
 Producto.hasOne(VideoJuego, { foreignKey: "id_producto", as: "VideoJuego" });
 VideoJuego.belongsTo(Producto, { foreignKey: "id_producto", as: "Producto" });
 VideoJuego.belongsTo(Genero, { foreignKey: "id_genero", as: "Genero" });
@@ -232,21 +298,38 @@ VideoJuegoFormato.belongsTo(VideoJuego, {
   as: "VideoJuego",
 });
 VideoJuegoFormato.belongsTo(Formato, { foreignKey: "id_formato", as: "Formato" });
+
+Producto.hasOne(Accesorio, { foreignKey: "id_producto", as: "Accesorio" });
+Accesorio.belongsTo(Producto, { foreignKey: "id_producto", as: "Producto" });
+Accesorio.belongsTo(TipoAccesorio, { foreignKey: "id_tipo_accesorio", as: "TipoAccesorio" });
+
+Producto.hasOne(Coleccionable, { foreignKey: "id_producto", as: "Coleccionable" });
+Coleccionable.belongsTo(Producto, { foreignKey: "id_producto", as: "Producto" });
+Coleccionable.belongsTo(TipoColeccionable, {
+  foreignKey: "id_tipo_coleccionable",
+  as: "TipoColeccionable",
+});
+
+Municipio.belongsTo(Provincia, { foreignKey: "id_provincia", as: "Provincia" });
+Direccion.belongsTo(Usuario, { foreignKey: "id_usuario", as: "Usuario" });
+Direccion.belongsTo(Provincia, { foreignKey: "id_provincia", as: "Provincia" });
+Direccion.belongsTo(Municipio, { foreignKey: "id_municipio", as: "Municipio" });
+Usuario.hasMany(Direccion, { foreignKey: "id_usuario", as: "Direcciones" });
+
 CarritoCabecera.belongsTo(Usuario, { foreignKey: "id_usuario", as: "Usuario" });
 Usuario.hasOne(CarritoCabecera, { foreignKey: "id_usuario", as: "Carrito" });
-CarritoCabecera.hasMany(CarritoDetalle, {
-  foreignKey: "id_carrito",
-  as: "Detalles",
-});
+CarritoCabecera.hasMany(CarritoDetalle, { foreignKey: "id_carrito", as: "Detalles" });
 CarritoDetalle.belongsTo(CarritoCabecera, { foreignKey: "id_carrito", as: "Carrito" });
 CarritoDetalle.belongsTo(Producto, { foreignKey: "id_producto", as: "Producto" });
-Producto.hasMany(CarritoDetalle, { foreignKey: "id_producto", as: "ItemsCarrito" });
+
 Pedido.belongsTo(Usuario, { foreignKey: "id_cliente", as: "Cliente" });
 Pedido.belongsTo(EstadoPedido, { foreignKey: "id_estado_pedido", as: "Estado" });
+Pedido.belongsTo(MetodoPago, { foreignKey: "id_metodo_pago", as: "MetodoPago" });
+Pedido.belongsTo(Direccion, { foreignKey: "id_direccion", as: "Direccion" });
 Pedido.hasMany(DetallePedido, { foreignKey: "id_pedido", as: "Detalles" });
 DetallePedido.belongsTo(Pedido, { foreignKey: "id_pedido", as: "Pedido" });
 DetallePedido.belongsTo(Producto, { foreignKey: "id_producto", as: "Producto" });
-Producto.hasMany(DetallePedido, { foreignKey: "id_producto", as: "Ventas" });
+
 Producto.hasMany(Resena, { foreignKey: "id_producto", as: "Resenas" });
 Resena.belongsTo(Producto, { foreignKey: "id_producto", as: "Producto" });
 Resena.belongsTo(Usuario, { foreignKey: "id_usuario", as: "Usuario" });
@@ -254,33 +337,39 @@ Resena.belongsTo(Usuario, { foreignKey: "id_usuario", as: "Usuario" });
 app.use(cors());
 app.use(compression());
 app.use(express.json());
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-const avatarDir = path.join(__dirname, "uploads", "perfiles");
-const productDir = path.join(__dirname, "uploads", "productos");
-
-for (const directory of [avatarDir, productDir]) {
-  if (!fs.existsSync(directory)) {
-    fs.mkdirSync(directory, { recursive: true });
-  }
-}
-
-const avatarStorage = multer.diskStorage({
-  destination: (_, __, cb) => cb(null, avatarDir),
-  filename: (_, file, cb) => cb(null, `user_${Date.now()}${path.extname(file.originalname)}`),
-});
-
-const productStorage = multer.diskStorage({
-  destination: (_, __, cb) => cb(null, productDir),
-  filename: (_, file, cb) => cb(null, `prod_${Date.now()}${path.extname(file.originalname)}`),
-});
-
-const uploadAvatar = multer({ storage: avatarStorage });
-const uploadProduct = multer({ storage: productStorage });
+const uploadMemory = multer({ storage: multer.memoryStorage() });
 
 const toNumber = (value) => Number.parseFloat(value ?? 0) || 0;
 const roundMoney = (value) => Number(toNumber(value).toFixed(2));
 const moneyToDb = (value) => roundMoney(value).toFixed(2);
+const normalizeText = (value) => String(value ?? "").trim();
+const normalizeLower = (value) => normalizeText(value).toLowerCase();
+const parseId = (value) => {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+};
+const parseBoolean = (value, fallback = false) => {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  return !["false", "0", "no"].includes(String(value).toLowerCase());
+};
+const toJsonList = (value) => {
+  if (Array.isArray(value)) return value;
+  if (value === undefined || value === null || value === "") return [];
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return String(value)
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+  }
+  return [];
+};
 
 const serializeUser = (user) => {
   if (!user) return null;
@@ -289,7 +378,46 @@ const serializeUser = (user) => {
   return plain;
 };
 
+const ensureCloudinaryConfigured = () => {
+  if (!process.env.CLOUDINARY_URL) {
+    const error = new Error("CLOUDINARY_URL no esta configurada");
+    error.status = 500;
+    throw error;
+  }
+};
+
+const uploadBufferToCloudinary = async (file, folder) => {
+  if (!file) return null;
+  ensureCloudinaryConfigured();
+
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder,
+        resource_type: "image",
+      },
+      (error, result) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(result);
+      },
+    );
+
+    stream.end(file.buffer);
+  });
+};
+
 const publicProductInclude = [
+  { model: TipoProducto, as: "TipoProducto", attributes: ["id_tipo_producto", "nombre"] },
+  { model: Fabricante, as: "Fabricante", attributes: ["id_fabricante", "nombre"], required: false },
+  {
+    model: ImagenProducto,
+    as: "Imagenes",
+    required: false,
+    attributes: ["id_imagen", "url", "es_principal"],
+  },
   {
     model: VideoJuego,
     as: "VideoJuego",
@@ -305,69 +433,72 @@ const publicProductInclude = [
       },
     ],
   },
+  {
+    model: Accesorio,
+    as: "Accesorio",
+    required: false,
+    include: [{ model: TipoAccesorio, as: "TipoAccesorio", attributes: ["id_tipo_accesorio", "nombre"] }],
+  },
+  {
+    model: Coleccionable,
+    as: "Coleccionable",
+    required: false,
+    include: [
+      {
+        model: TipoColeccionable,
+        as: "TipoColeccionable",
+        attributes: ["id_tipo_coleccionable", "nombre"],
+      },
+    ],
+  },
 ];
 
-const selectPreferredFormat = (formatos = []) =>
-  [...formatos].sort((left, right) => {
-    const leftHasStock = (left.stock ?? 0) > 0 ? 1 : 0;
-    const rightHasStock = (right.stock ?? 0) > 0 ? 1 : 0;
-
-    if (rightHasStock !== leftHasStock) {
-      return rightHasStock - leftHasStock;
-    }
-
-    const leftPrice = toNumber(left.precio);
-    const rightPrice = toNumber(right.precio);
-
-    if (leftPrice !== rightPrice) {
-      return leftPrice - rightPrice;
-    }
-
-    return (left.id_formato ?? 0) - (right.id_formato ?? 0);
-  })[0] || null;
+const buildProductImage = (product) => {
+  const principal = (product.Imagenes || []).find((image) => image.es_principal) || product.Imagenes?.[0];
+  return principal?.url || product.imagen_url || null;
+};
 
 const mapProduct = (productInstance) => {
-  const product = productInstance?.get
-    ? productInstance.get({ plain: true })
-    : productInstance;
-
+  const product = productInstance?.get ? productInstance.get({ plain: true }) : productInstance;
   if (!product) return null;
 
-  const formatos = product.VideoJuego?.Formatos || [];
-  const preferredFormat = selectPreferredFormat(formatos);
-  const stockTotal = formatos.reduce((sum, item) => sum + Number(item.stock || 0), 0);
+  const formatos = (product.VideoJuego?.Formatos || []).map((item) => ({
+    id_vj_formato: item.id_vj_formato,
+    id_formato: item.id_formato,
+    nombre: item.Formato?.nombre || null,
+  }));
   const reviewList = product.Resenas || [];
   const reviewCount = reviewList.length;
   const rating =
     reviewCount > 0
       ? roundMoney(
-          reviewList.reduce((sum, review) => sum + Number(review.puntuacion || 0), 0) /
-            reviewCount,
+          reviewList.reduce((sum, review) => sum + Number(review.puntuacion || 0), 0) / reviewCount,
         )
       : null;
 
   return {
     ...product,
-    precio:
-      preferredFormat?.precio != null
-        ? roundMoney(preferredFormat.precio)
-        : roundMoney(product.precio),
+    imagen_url: buildProductImage(product),
+    imagenes: (product.Imagenes || []).map((image) => ({
+      id_imagen: image.id_imagen,
+      url: image.url,
+      es_principal: image.es_principal,
+    })),
+    precio: roundMoney(product.precio),
     precio_base: roundMoney(product.precio),
-    formato_nombre: preferredFormat?.Formato?.nombre || null,
-    stock_disponible:
-      preferredFormat?.stock != null
-        ? Number(preferredFormat.stock)
-        : stockTotal || null,
-    stock_total: stockTotal || null,
+    stock: Number(product.stock || 0),
+    stock_disponible: Number(product.stock || 0),
+    stock_total: Number(product.stock || 0),
+    tipo_producto_nombre: product.TipoProducto?.nombre || null,
     genero_nombre: product.VideoJuego?.Genero?.nombre || null,
     plataforma_nombre: product.VideoJuego?.Plataforma?.nombre || null,
-    formatos_disponibles: formatos.map((item) => ({
-      id_vj_formato: item.id_vj_formato,
-      id_formato: item.id_formato,
-      nombre: item.Formato?.nombre || null,
-      precio: roundMoney(item.precio),
-      stock: Number(item.stock || 0),
-    })),
+    formatos_disponibles: formatos,
+    formato_nombre:
+      formatos.length === 1
+        ? formatos[0].nombre
+        : formatos.map((item) => item.nombre).filter(Boolean).join(", ") || null,
+    tipo_accesorio_nombre: product.Accesorio?.TipoAccesorio?.nombre || null,
+    tipo_coleccionable_nombre: product.Coleccionable?.TipoColeccionable?.nombre || null,
     rating_promedio: rating,
     cantidad_resenas: reviewCount,
   };
@@ -391,7 +522,7 @@ const authMiddleware = async (req, res, next) => {
 
     req.user = user;
     next();
-  } catch (error) {
+  } catch {
     res.status(401).json({ error: "Token invalido" });
   }
 };
@@ -402,9 +533,18 @@ const requireRoles =
     if (!req.user || !roles.includes(Number(req.user.id_rol))) {
       return res.status(403).json({ error: "Acceso denegado" });
     }
-
     next();
   };
+
+const getTypeSlug = (tipo) => normalizeLower(tipo?.nombre).replace(/\s+/g, "");
+
+const assertNotEmpty = (value, message) => {
+  if (!normalizeText(value)) {
+    const error = new Error(message);
+    error.status = 400;
+    throw error;
+  }
+};
 
 const getOrCreateCart = async (idUsuario, transaction) => {
   let cart = await CarritoCabecera.findOne({
@@ -415,10 +555,7 @@ const getOrCreateCart = async (idUsuario, transaction) => {
 
   if (!cart) {
     cart = await CarritoCabecera.create(
-      {
-        id_usuario: idUsuario,
-        fecha_actualizacion: new Date(),
-      },
+      { id_usuario: idUsuario, fecha_actualizacion: new Date() },
       { transaction },
     );
   }
@@ -429,19 +566,34 @@ const getOrCreateCart = async (idUsuario, transaction) => {
 const touchCart = (cart, transaction) =>
   cart.update({ fecha_actualizacion: new Date() }, { transaction });
 
-const loadProductForSale = async (idProducto, transaction, lock = false) =>
-  Producto.findByPk(idProducto, {
-    include: publicProductInclude,
+const loadProductRecord = async (idProducto, transaction, lock = false, includeReviews = false) => {
+  const include = [...publicProductInclude];
+  if (includeReviews) {
+    include.push({
+      model: Resena,
+      as: "Resenas",
+      required: false,
+      where: { estado: REVIEW_STATUS_APPROVED },
+      include: [
+        {
+          model: Usuario,
+          as: "Usuario",
+          attributes: ["id_usuario", "nombre", "apellido", "avatar_url"],
+        },
+      ],
+    });
+  }
+
+  return Producto.findByPk(idProducto, {
+    include,
     transaction,
-    lock: transaction && lock ? true : undefined,
+    lock: transaction && lock ? { level: transaction.LOCK.UPDATE, of: Producto } : undefined,
+    order: includeReviews ? [[{ model: Resena, as: "Resenas" }, "fecha_resena", "DESC"]] : undefined,
   });
+};
 
 const resolveLinePricing = async (idProducto, transaction, lock = false) => {
-  const productInstance = await Producto.findByPk(idProducto, {
-  include: publicProductInclude,
-  transaction,
-  lock: transaction && lock ? { level: transaction.LOCK.UPDATE, of: Producto } : undefined
-  });
+  const productInstance = await loadProductRecord(idProducto, transaction, lock, false);
 
   if (!productInstance || productInstance.activo === false) {
     const error = new Error("Producto no disponible");
@@ -450,27 +602,10 @@ const resolveLinePricing = async (idProducto, transaction, lock = false) => {
   }
 
   const product = mapProduct(productInstance);
-  const availableFormats = productInstance.VideoJuego?.Formatos || [];
-  const preferredFormatSnapshot = selectPreferredFormat(
-    availableFormats.map((item) => item.get({ plain: true })),
-  );
-  const preferredFormat = await VideoJuegoFormato.findByPk(preferredFormatSnapshot.id_vj_formato, {
-  include: [{ model: Formato, as: "Formato", attributes: ["id_formato", "nombre"] }],
-  transaction,
-  lock: transaction && lock ? { level: transaction.LOCK.UPDATE, of: VideoJuegoFormato } : undefined
-  });
-
   return {
     product,
-    price:
-      preferredFormat?.precio != null
-        ? roundMoney(preferredFormat.precio)
-        : roundMoney(product.precio),
-    formatName: preferredFormat?.Formato?.nombre || product.formato_nombre || "General",
-    stockControlled: Boolean(preferredFormat),
-    stockAvailable:
-      preferredFormat?.stock != null ? Number(preferredFormat.stock) : Number.MAX_SAFE_INTEGER,
-    inventoryRow: preferredFormat,
+    price: roundMoney(product.precio),
+    stockAvailable: Number(product.stock || 0),
   };
 };
 
@@ -488,86 +623,221 @@ const buildCartPayload = async (idUsuario, transaction) => {
   });
 
   if (!cart) {
-    return {
-      id_carrito: null,
-      items: [],
-      subtotal: 0,
-      itbis: 0,
-      total: 0,
-      cantidadItems: 0,
-    };
+    return { id_carrito: null, items: [], subtotal: 0, itbis: 0, total: 0, cantidadItems: 0 };
   }
 
-  const items = cart.Detalles.map((item) => {
-    const mappedProduct = mapProduct(item.Producto);
-    const unitPrice = roundMoney(mappedProduct.precio);
-    const lineTotal = roundMoney(unitPrice * Number(item.cantidad || 0));
-
+  const items = cart.Detalles.map((detail) => {
+    const product = mapProduct(detail.Producto);
+    const unitPrice = roundMoney(product.precio);
     return {
-      id_carrito_detalle: item.id_carrito_detalle,
-      id_producto: item.id_producto,
-      cantidad: Number(item.cantidad || 0),
-      titulo: mappedProduct.titulo,
-      descripcion: mappedProduct.descripcion,
-      imagen_url: mappedProduct.imagen_url,
+      id_carrito_detalle: detail.id_carrito_detalle,
+      id_producto: detail.id_producto,
+      cantidad: Number(detail.cantidad || 0),
+      titulo: product.titulo,
+      descripcion: product.descripcion,
+      imagen_url: product.imagen_url,
       precio_unitario: unitPrice,
-      total_linea: lineTotal,
-      formato: mappedProduct.formato_nombre || "General",
-      genero: mappedProduct.genero_nombre,
-      plataforma: mappedProduct.plataforma_nombre,
-      stock_disponible: mappedProduct.stock_disponible,
+      total_linea: roundMoney(unitPrice * Number(detail.cantidad || 0)),
+      formato: product.formato_nombre || product.tipo_producto_nombre || "General",
+      genero: product.genero_nombre,
+      plataforma: product.plataforma_nombre,
+      stock_disponible: product.stock_disponible,
+      tipo_producto_nombre: product.tipo_producto_nombre,
     };
   });
 
-  const subtotal = roundMoney(
-    items.reduce((sum, item) => sum + item.precio_unitario * item.cantidad, 0),
-  );
+  const subtotal = roundMoney(items.reduce((sum, item) => sum + item.total_linea, 0));
   const itbis = roundMoney(subtotal * ITBIS_RATE);
-  const total = roundMoney(subtotal + itbis);
-
   return {
     id_carrito: cart.id_carrito,
     items,
     subtotal,
     itbis,
-    total,
+    total: roundMoney(subtotal + itbis),
     cantidadItems: items.reduce((sum, item) => sum + item.cantidad, 0),
+  };
+};
+
+const mapDireccion = (addressInstance) => {
+  const address = addressInstance?.get ? addressInstance.get({ plain: true }) : addressInstance;
+  if (!address) return null;
+
+  return {
+    ...address,
+    provincia_nombre: address.Provincia?.nombre || null,
+    municipio_nombre: address.municipio_personalizado || address.Municipio?.nombre || null,
+  };
+};
+
+const resolveDireccionPayload = async (payload, userId, transaction) => {
+  const idDireccion = parseId(payload.id_direccion);
+
+  if (idDireccion) {
+    const savedAddress = await Direccion.findOne({
+      where: { id_direccion: idDireccion, id_usuario: userId },
+      include: [
+        { model: Provincia, as: "Provincia", attributes: ["id_provincia", "nombre"] },
+        { model: Municipio, as: "Municipio", attributes: ["id_municipio", "nombre", "id_provincia"] },
+      ],
+      transaction,
+      lock: transaction ? true : undefined,
+    });
+
+    if (!savedAddress) {
+      const error = new Error("La direccion seleccionada no existe");
+      error.status = 404;
+      throw error;
+    }
+
+    return {
+      record: savedAddress,
+      orderPayload: {
+        calle_envio: savedAddress.calle,
+        numero_casa_envio: savedAddress.numero_casa,
+        municipio_envio: savedAddress.municipio_personalizado || savedAddress.Municipio?.nombre || "",
+        provincia_envio: savedAddress.Provincia?.nombre || "",
+        id_direccion: savedAddress.id_direccion,
+      },
+    };
+  }
+
+  const calle = normalizeText(payload.calle);
+  const numeroCasa = normalizeText(payload.numero_casa);
+  const detalle = normalizeText(payload.detalle) || null;
+  const idProvincia = parseId(payload.id_provincia);
+  const idMunicipio = parseId(payload.id_municipio);
+  const municipioPersonalizado = normalizeText(payload.municipio_personalizado);
+  const guardarDireccion = parseBoolean(payload.guardar_direccion, false);
+
+  assertNotEmpty(calle, "La direccion requiere calle");
+  assertNotEmpty(numeroCasa, "La direccion requiere numero de casa o referencia");
+
+  if (!idProvincia) {
+    const error = new Error("Debes seleccionar una provincia");
+    error.status = 400;
+    throw error;
+  }
+
+  const province = await Provincia.findByPk(idProvincia, { transaction });
+  if (!province) {
+    const error = new Error("Provincia invalida");
+    error.status = 400;
+    throw error;
+  }
+
+  let municipio = null;
+  let municipioDisplay = null;
+  let municipalityForSave = idMunicipio;
+
+  if (municipioPersonalizado) {
+    municipioDisplay = municipioPersonalizado;
+    municipio = await Municipio.findOne({
+      where: { id_provincia: idProvincia },
+      order: [["nombre", "ASC"]],
+      transaction,
+    });
+
+    if (!municipio) {
+      const error = new Error("No hay municipios registrados para esa provincia");
+      error.status = 400;
+      throw error;
+    }
+
+    municipalityForSave = municipio.id_municipio;
+  } else {
+    if (!idMunicipio) {
+      const error = new Error("Debes seleccionar un municipio");
+      error.status = 400;
+      throw error;
+    }
+
+    municipio = await Municipio.findOne({
+      where: { id_municipio: idMunicipio, id_provincia: idProvincia },
+      transaction,
+    });
+
+    if (!municipio) {
+      const error = new Error("Municipio invalido para la provincia seleccionada");
+      error.status = 400;
+      throw error;
+    }
+
+    municipioDisplay = municipio.nombre;
+  }
+
+  let savedRecord = null;
+
+  if (guardarDireccion) {
+    const currentPrincipal = await Direccion.findOne({
+      where: { id_usuario: userId, es_principal: true },
+      transaction,
+    });
+
+    savedRecord = await Direccion.create(
+      {
+        id_usuario: userId,
+        id_municipio: municipalityForSave,
+        calle,
+        numero_casa: numeroCasa,
+        detalle,
+        es_principal: !currentPrincipal,
+        id_provincia: idProvincia,
+        municipio_personalizado: municipioPersonalizado || null,
+      },
+      { transaction },
+    );
+  }
+
+  return {
+    record: savedRecord,
+    orderPayload: {
+      calle_envio: calle,
+      numero_casa_envio: numeroCasa,
+      municipio_envio: municipioDisplay,
+      provincia_envio: province.nombre,
+      id_direccion: savedRecord?.id_direccion || null,
+    },
   };
 };
 
 const loadPedidoPayload = async (pedidoId) => {
   const pedido = await Pedido.findByPk(pedidoId, {
     include: [
+      { model: Usuario, as: "Cliente", attributes: ["id_usuario", "nombre", "apellido", "email"] },
+      { model: EstadoPedido, as: "Estado", attributes: ["id_estado_pedido", "nombre"] },
+      { model: MetodoPago, as: "MetodoPago", attributes: ["id_metodo_pago", "nombre"] },
       {
-        model: Usuario,
-        as: "Cliente",
-        attributes: ["id_usuario", "nombre", "apellido", "email"],
-      },
-      {
-        model: EstadoPedido,
-        as: "Estado",
-        attributes: ["id_estado_pedido", "nombre"],
+        model: Direccion,
+        as: "Direccion",
+        required: false,
+        include: [
+          { model: Provincia, as: "Provincia", attributes: ["id_provincia", "nombre"] },
+          { model: Municipio, as: "Municipio", attributes: ["id_municipio", "nombre"] },
+        ],
       },
       {
         model: DetallePedido,
         as: "Detalles",
-        include: [{ model: Producto, as: "Producto", attributes: ["id_producto", "titulo", "imagen_url"] }],
+        include: [{ model: Producto, as: "Producto", include: publicProductInclude }],
       },
     ],
   });
 
   if (!pedido) return null;
-
   const plain = pedido.get({ plain: true });
+
   return {
     ...plain,
     subtotal: roundMoney(plain.subtotal),
+    costo_envio: roundMoney(plain.costo_envio),
     itbis: roundMoney(plain.itbis),
     total: roundMoney(plain.total),
-    fecha_pedido: plain.fecha_pedido,
+    Direccion: mapDireccion(plain.Direccion),
     Detalles: (plain.Detalles || []).map((detail) => ({
       ...detail,
       precio_unitario_venta: roundMoney(detail.precio_unitario_venta),
+      monto_descuento: roundMoney(detail.monto_descuento),
+      Producto: mapProduct(detail.Producto),
     })),
   };
 };
@@ -595,12 +865,167 @@ const getReportDateRange = (filter) => {
   return { start, end, key: "month" };
 };
 
+const clearProductSubtypeRows = async (productId, transaction) => {
+  await Promise.all([
+    VideoJuegoFormato.destroy({ where: { id_videojuego: productId }, transaction }),
+    VideoJuego.destroy({ where: { id_producto: productId }, transaction }),
+    Accesorio.destroy({ where: { id_producto: productId }, transaction }),
+    Coleccionable.destroy({ where: { id_producto: productId }, transaction }),
+  ]);
+};
+
+const saveProductSubtype = async (productId, reqBody, typeSlug, transaction) => {
+  if (typeSlug === PRODUCT_TYPE_VIDEOGAME) {
+    const idGenero = parseId(reqBody.id_genero);
+    const idPlataforma = parseId(reqBody.id_plataforma);
+    const formatos = toJsonList(reqBody.formatos).map(parseId).filter(Boolean);
+
+    if (!idGenero || !idPlataforma || !formatos.length) {
+      const error = new Error("Los videojuegos requieren genero, plataforma y al menos un formato");
+      error.status = 400;
+      throw error;
+    }
+
+    await VideoJuego.create(
+      {
+        id_producto: productId,
+        id_genero: idGenero,
+        id_plataforma: idPlataforma,
+        fecha_lanzamiento: normalizeText(reqBody.fecha_lanzamiento) || null,
+      },
+      { transaction },
+    );
+
+    await Promise.all(
+      [...new Set(formatos)].map((id_formato) =>
+        VideoJuegoFormato.create({ id_videojuego: productId, id_formato }, { transaction }),
+      ),
+    );
+    return;
+  }
+
+  if (typeSlug === PRODUCT_TYPE_ACCESSORY) {
+    const idTipoAccesorio = parseId(reqBody.id_tipo_accesorio);
+    if (!idTipoAccesorio) {
+      const error = new Error("Los accesorios requieren un tipo de accesorio");
+      error.status = 400;
+      throw error;
+    }
+    await Accesorio.create({ id_producto: productId, id_tipo_accesorio: idTipoAccesorio }, { transaction });
+    return;
+  }
+
+  if (typeSlug === PRODUCT_TYPE_COLLECTIBLE) {
+    const idTipoColeccionable = parseId(reqBody.id_tipo_coleccionable);
+    if (!idTipoColeccionable) {
+      const error = new Error("Los coleccionables requieren un tipo de coleccionable");
+      error.status = 400;
+      throw error;
+    }
+    await Coleccionable.create(
+      { id_producto: productId, id_tipo_coleccionable: idTipoColeccionable },
+      { transaction },
+    );
+  }
+};
+
+const persistProductImage = async (productId, product, file, transaction) => {
+  if (!file) return product.imagen_url;
+
+  const uploaded = await uploadBufferToCloudinary(file, "neogaming/productos");
+  const imageUrl = uploaded?.secure_url || uploaded?.url;
+
+  if (!imageUrl) {
+    const error = new Error("No se pudo subir la imagen del producto");
+    error.status = 500;
+    throw error;
+  }
+
+  await product.update({ imagen_url: imageUrl }, { transaction });
+
+  const previousMain = await ImagenProducto.findOne({
+    where: { id_producto: productId, es_principal: true },
+    transaction,
+  });
+
+  if (previousMain) {
+    await previousMain.update({ es_principal: false }, { transaction });
+  }
+
+  await ImagenProducto.create(
+    {
+      id_producto: productId,
+      url: imageUrl,
+      es_principal: true,
+    },
+    { transaction },
+  );
+
+  return imageUrl;
+};
+
+const catalogDefinitions = {
+  tiposProducto: { model: TipoProducto, idField: "id_tipo_producto", extra: [] },
+  fabricantes: { model: Fabricante, idField: "id_fabricante", extra: [] },
+  generos: { model: Genero, idField: "id_genero", extra: [] },
+  plataformas: { model: Plataforma, idField: "id_plataforma", extra: [] },
+  formatos: { model: Formato, idField: "id_formato", extra: [] },
+  metodosPago: { model: MetodoPago, idField: "id_metodo_pago", extra: [] },
+  estadosPedido: { model: EstadoPedido, idField: "id_estado_pedido", extra: [] },
+  provincias: { model: Provincia, idField: "id_provincia", extra: [] },
+  tiposAccesorio: { model: TipoAccesorio, idField: "id_tipo_accesorio", extra: [] },
+  tiposColeccionable: { model: TipoColeccionable, idField: "id_tipo_coleccionable", extra: [] },
+  municipios: { model: Municipio, idField: "id_municipio", extra: ["id_provincia"] },
+};
+
+const loadCatalogsPayload = async () => {
+  const [
+    tiposProducto,
+    fabricantes,
+    generos,
+    plataformas,
+    formatos,
+    metodosPago,
+    estadosPedido,
+    provincias,
+    municipios,
+    tiposAccesorio,
+    tiposColeccionable,
+  ] = await Promise.all([
+    TipoProducto.findAll({ order: [["nombre", "ASC"]] }),
+    Fabricante.findAll({ order: [["nombre", "ASC"]] }),
+    Genero.findAll({ order: [["nombre", "ASC"]] }),
+    Plataforma.findAll({ order: [["nombre", "ASC"]] }),
+    Formato.findAll({ order: [["nombre", "ASC"]] }),
+    MetodoPago.findAll({ order: [["nombre", "ASC"]] }),
+    EstadoPedido.findAll({ order: [["id_estado_pedido", "ASC"]] }),
+    Provincia.findAll({ order: [["nombre", "ASC"]] }),
+    Municipio.findAll({ order: [["nombre", "ASC"]] }),
+    TipoAccesorio.findAll({ order: [["nombre", "ASC"]] }),
+    TipoColeccionable.findAll({ order: [["nombre", "ASC"]] }),
+  ]);
+
+  return {
+    tiposProducto,
+    fabricantes,
+    generos,
+    plataformas,
+    formatos,
+    metodosPago,
+    estadosPedido,
+    provincias,
+    municipios,
+    tiposAccesorio,
+    tiposColeccionable,
+  };
+};
+
 app.post("/api/login", async (req, res) => {
   const { email, contrasena } = req.body;
 
   try {
     const user = await Usuario.findOne({
-      where: { email: String(email || "").trim().toLowerCase() },
+      where: { email: normalizeLower(email) },
       include: [{ model: Rol, as: "Rol", attributes: ["id_rol", "nombre"] }],
     });
 
@@ -630,7 +1055,7 @@ app.post("/api/login", async (req, res) => {
 
     const token = jwt.sign({ id_usuario: user.id_usuario }, JWT_SECRET, { expiresIn: "2h" });
     res.json({ token, user: serializeUser(user) });
-  } catch (error) {
+  } catch {
     res.status(500).json({ error: "Error en login" });
   }
 });
@@ -638,12 +1063,12 @@ app.post("/api/login", async (req, res) => {
 app.post("/api/usuarios", async (req, res) => {
   const { nombre, apellido, email, telefono, contrasena } = req.body;
 
-  if (!nombre || !apellido || !email || !contrasena) {
+  if (!normalizeText(nombre) || !normalizeText(apellido) || !normalizeText(email) || !normalizeText(contrasena)) {
     return res.status(400).json({ error: "Nombre, apellido, email y contrasena son obligatorios" });
   }
 
   try {
-    const normalizedEmail = String(email).trim().toLowerCase();
+    const normalizedEmail = normalizeLower(email);
     const existingUser = await Usuario.findOne({ where: { email: normalizedEmail } });
 
     if (existingUser) {
@@ -653,40 +1078,25 @@ app.post("/api/usuarios", async (req, res) => {
     const contrasena_hash = await bcrypt.hash(String(contrasena), 10);
     const nuevoUsuario = await Usuario.create({
       id_rol: 1,
-      nombre: String(nombre).trim(),
-      apellido: String(apellido).trim(),
+      nombre: normalizeText(nombre),
+      apellido: normalizeText(apellido),
       email: normalizedEmail,
-      telefono: telefono ? String(telefono).trim() : null,
+      telefono: normalizeText(telefono) || null,
       contrasena_hash,
       activo: true,
     });
 
-    res.status(201).json({
-      message: "Usuario registrado correctamente",
-      user: serializeUser(nuevoUsuario),
-    });
-  } catch (error) {
+    res.status(201).json({ message: "Usuario registrado correctamente", user: serializeUser(nuevoUsuario) });
+  } catch {
     res.status(500).json({ error: "Error registrando usuario" });
   }
 });
 
-app.get("/api/usuarios/:id", authMiddleware, async (req, res) => {
+app.get("/api/catalogos", async (_req, res) => {
   try {
-    const idUsuario = Number(req.params.id);
-    
-    // Buscamos el usuario incluyendo su rol para el frontend
-    const user = await Usuario.findByPk(idUsuario, {
-      include: [{ model: Rol, as: "Rol", attributes: ["id_rol", "nombre"] }],
-    });
-
-    if (!user) {
-      return res.status(404).json({ error: "Usuario no encontrado" });
-    }
-
-    // Usamos serializeUser para no enviar la contraseña
-    res.json(serializeUser(user));
-  } catch (error) {
-    res.status(500).json({ error: "Error al obtener el detalle del usuario" });
+    res.json(await loadCatalogsPayload());
+  } catch {
+    res.status(500).json({ error: "Error obteniendo catalogos" });
   }
 });
 
@@ -694,21 +1104,23 @@ app.get("/api/perfil", authMiddleware, async (req, res) => {
   res.json(serializeUser(req.user));
 });
 
-app.put("/api/perfil", authMiddleware, uploadAvatar.single("avatar"), async (req, res) => {
+app.put("/api/perfil", authMiddleware, uploadMemory.single("avatar"), async (req, res) => {
   try {
     const updates = {};
 
     for (const field of ["nombre", "apellido", "telefono"]) {
       if (req.body[field] !== undefined) {
-        updates[field] = req.body[field];
+        const normalized = normalizeText(req.body[field]);
+        updates[field] = normalized || null;
       }
     }
 
     if (req.file) {
-      updates.avatar_url = `/uploads/perfiles/${req.file.filename}`;
+      const uploaded = await uploadBufferToCloudinary(req.file, "neogaming/perfiles");
+      updates.avatar_url = uploaded?.secure_url || uploaded?.url;
     }
 
-    if (Object.keys(updates).length > 0) {
+    if (Object.keys(updates).length) {
       await req.user.update(updates);
     }
 
@@ -718,7 +1130,138 @@ app.put("/api/perfil", authMiddleware, uploadAvatar.single("avatar"), async (req
 
     res.json(serializeUser(refreshedUser));
   } catch (error) {
-    res.status(500).json({ error: "Error actualizando perfil" });
+    res.status(error.status || 500).json({ error: error.message || "Error actualizando perfil" });
+  }
+});
+
+app.get("/api/direcciones", authMiddleware, async (req, res) => {
+  try {
+    const rows = await Direccion.findAll({
+      where: { id_usuario: req.user.id_usuario },
+      include: [
+        { model: Provincia, as: "Provincia", attributes: ["id_provincia", "nombre"] },
+        { model: Municipio, as: "Municipio", attributes: ["id_municipio", "nombre", "id_provincia"] },
+      ],
+      order: [["es_principal", "DESC"], ["id_direccion", "DESC"]],
+    });
+
+    res.json(rows.map(mapDireccion));
+  } catch {
+    res.status(500).json({ error: "Error obteniendo direcciones" });
+  }
+});
+
+app.post("/api/direcciones", authMiddleware, async (req, res) => {
+  try {
+    let created = null;
+    await sequelize.transaction(async (transaction) => {
+      const resolved = await resolveDireccionPayload({ ...req.body, guardar_direccion: true }, req.user.id_usuario, transaction);
+      created = resolved.record;
+    });
+
+    const payload = await Direccion.findByPk(created.id_direccion, {
+      include: [
+        { model: Provincia, as: "Provincia", attributes: ["id_provincia", "nombre"] },
+        { model: Municipio, as: "Municipio", attributes: ["id_municipio", "nombre", "id_provincia"] },
+      ],
+    });
+
+    res.status(201).json(mapDireccion(payload));
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || "Error creando direccion" });
+  }
+});
+
+app.put("/api/direcciones/:idDireccion", authMiddleware, async (req, res) => {
+  try {
+    const idDireccion = parseId(req.params.idDireccion);
+    const address = await Direccion.findOne({
+      where: { id_direccion: idDireccion, id_usuario: req.user.id_usuario },
+    });
+
+    if (!address) {
+      return res.status(404).json({ error: "Direccion no encontrada" });
+    }
+
+    await sequelize.transaction(async (transaction) => {
+      const idProvincia = parseId(req.body.id_provincia);
+      const idMunicipio = parseId(req.body.id_municipio);
+      const municipioPersonalizado = normalizeText(req.body.municipio_personalizado);
+
+      assertNotEmpty(req.body.calle, "La direccion requiere calle");
+      assertNotEmpty(req.body.numero_casa, "La direccion requiere numero de casa o referencia");
+
+      const province = await Provincia.findByPk(idProvincia, { transaction });
+      if (!province) {
+        const error = new Error("Provincia invalida");
+        error.status = 400;
+        throw error;
+      }
+
+      let municipalityToSave = idMunicipio;
+      if (municipioPersonalizado) {
+        const placeholderMunicipality = await Municipio.findOne({
+          where: { id_provincia: idProvincia },
+          order: [["nombre", "ASC"]],
+          transaction,
+        });
+
+        if (!placeholderMunicipality) {
+          const error = new Error("No hay municipios registrados para esa provincia");
+          error.status = 400;
+          throw error;
+        }
+        municipalityToSave = placeholderMunicipality.id_municipio;
+      } else {
+        const municipality = await Municipio.findOne({
+          where: { id_municipio: idMunicipio, id_provincia: idProvincia },
+          transaction,
+        });
+        if (!municipality) {
+          const error = new Error("Municipio invalido para la provincia seleccionada");
+          error.status = 400;
+          throw error;
+        }
+      }
+
+      const nextPrincipal = parseBoolean(req.body.es_principal, address.es_principal);
+      await address.update(
+        {
+          calle: normalizeText(req.body.calle),
+          numero_casa: normalizeText(req.body.numero_casa),
+          detalle: normalizeText(req.body.detalle) || null,
+          id_provincia: idProvincia,
+          id_municipio: municipalityToSave,
+          municipio_personalizado: municipioPersonalizado || null,
+          es_principal: nextPrincipal,
+        },
+        { transaction },
+      );
+
+      if (nextPrincipal) {
+        await Direccion.update(
+          { es_principal: false },
+          {
+            where: {
+              id_usuario: req.user.id_usuario,
+              id_direccion: { [Op.ne]: address.id_direccion },
+            },
+            transaction,
+          },
+        );
+      }
+    });
+
+    const payload = await Direccion.findByPk(address.id_direccion, {
+      include: [
+        { model: Provincia, as: "Provincia", attributes: ["id_provincia", "nombre"] },
+        { model: Municipio, as: "Municipio", attributes: ["id_municipio", "nombre", "id_provincia"] },
+      ],
+    });
+
+    res.json(mapDireccion(payload));
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || "Error actualizando direccion" });
   }
 });
 
@@ -729,113 +1272,120 @@ app.get("/api/productos", async (_req, res) => {
       include: publicProductInclude,
       order: [["id_producto", "DESC"]],
     });
-
     res.json(products.map(mapProduct));
-  } catch (error) {
+  } catch {
     res.status(500).json({ error: "Error obteniendo productos" });
   }
 });
 
 app.get("/api/productos/:id", async (req, res) => {
   try {
-    const product = await Producto.findByPk(req.params.id, {
-      include: [
-        ...publicProductInclude,
-        {
-          model: Resena,
-          as: "Resenas",
-          required: false,
-          where: { estado: REVIEW_STATUS_APPROVED },
-          include: [
-            {
-              model: Usuario,
-              as: "Usuario",
-              attributes: ["id_usuario", "nombre", "apellido", "avatar_url"],
-            },
-          ],
-        },
-      ],
-      order: [[{ model: Resena, as: "Resenas" }, "fecha_resena", "DESC"]],
-    });
-
+    const product = await loadProductRecord(req.params.id, null, false, true);
     if (!product || product.activo === false) {
       return res.status(404).json({ error: "Producto no encontrado" });
     }
-
     res.json(mapProduct(product));
-  } catch (error) {
+  } catch {
     res.status(500).json({ error: "Error obteniendo producto" });
   }
 });
 
-app.post(
-  "/api/productos",
-  authMiddleware,
-  requireRoles(...STAFF_ROLE_IDS),
-  uploadProduct.single("imagen"),
-  async (req, res) => {
-    try {
-      const payload = {
-        id_tipo_producto: req.body.id_tipo_producto,
-        id_fabricante: req.body.id_fabricante || null,
-        titulo: req.body.titulo,
-        descripcion: req.body.descripcion || null,
-        precio: req.body.precio ? moneyToDb(req.body.precio) : moneyToDb(0),
-        activo: req.body.activo !== undefined ? req.body.activo !== "false" : true,
-      };
+app.post("/api/productos", authMiddleware, requireRoles(...STAFF_ROLE_IDS), uploadMemory.single("imagen"), async (req, res) => {
+  try {
+    const productId = await sequelize.transaction(async (transaction) => {
+      const idTipoProducto = parseId(req.body.id_tipo_producto);
+      const tipoProducto = await TipoProducto.findByPk(idTipoProducto, { transaction });
 
-      if (req.file) {
-        payload.imagen_url = `/uploads/productos/${req.file.filename}`;
+      if (!tipoProducto) {
+        const error = new Error("Tipo de producto invalido");
+        error.status = 400;
+        throw error;
       }
 
-      const nuevoProducto = await Producto.create(payload);
-      const created = await loadProductForSale(nuevoProducto.id_producto);
-      res.status(201).json(mapProduct(created));
-    } catch (error) {
-      res.status(500).json({ error: "Error creando producto" });
-    }
-  },
-);
+      assertNotEmpty(req.body.titulo, "El titulo es obligatorio");
 
-app.put(
-  "/api/productos/:id",
-  authMiddleware,
-  requireRoles(...STAFF_ROLE_IDS),
-  uploadProduct.single("imagen"),
-  async (req, res) => {
-    try {
-      const product = await Producto.findByPk(req.params.id);
+      const product = await Producto.create(
+        {
+          id_tipo_producto: idTipoProducto,
+          id_fabricante: parseId(req.body.id_fabricante),
+          titulo: normalizeText(req.body.titulo),
+          descripcion: normalizeText(req.body.descripcion) || null,
+          precio: moneyToDb(req.body.precio),
+          stock: Number(req.body.stock ?? 0),
+          activo: parseBoolean(req.body.activo, true),
+        },
+        { transaction },
+      );
+
+      await saveProductSubtype(product.id_producto, req.body, getTypeSlug(tipoProducto), transaction);
+      await persistProductImage(product.id_producto, product, req.file, transaction);
+      return product.id_producto;
+    });
+
+    res.status(201).json(mapProduct(await loadProductRecord(productId)));
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || "Error creando producto" });
+  }
+});
+
+app.put("/api/productos/:id", authMiddleware, requireRoles(...STAFF_ROLE_IDS), uploadMemory.single("imagen"), async (req, res) => {
+  try {
+    const productId = parseId(req.params.id);
+
+    await sequelize.transaction(async (transaction) => {
+      const product = await Producto.findByPk(productId, {
+        transaction,
+        lock: { level: transaction.LOCK.UPDATE, of: Producto },
+      });
+
       if (!product) {
-        return res.status(404).json({ error: "Producto no encontrado" });
+        const error = new Error("Producto no encontrado");
+        error.status = 404;
+        throw error;
       }
 
-      const updates = {
-        id_tipo_producto: req.body.id_tipo_producto ?? product.id_tipo_producto,
-        id_fabricante: req.body.id_fabricante ?? product.id_fabricante,
-        titulo: req.body.titulo ?? product.titulo,
-        descripcion: req.body.descripcion ?? product.descripcion,
-        activo:
-          req.body.activo !== undefined
-            ? req.body.activo !== "false" && req.body.activo !== false
-            : product.activo,
-      };
+      const nextTypeId = parseId(req.body.id_tipo_producto) || product.id_tipo_producto;
+      const tipoProducto = await TipoProducto.findByPk(nextTypeId, { transaction });
 
-      if (req.body.precio !== undefined && req.body.precio !== "") {
-        updates.precio = moneyToDb(req.body.precio);
+      if (!tipoProducto) {
+        const error = new Error("Tipo de producto invalido");
+        error.status = 400;
+        throw error;
       }
 
-      if (req.file) {
-        updates.imagen_url = `/uploads/productos/${req.file.filename}`;
-      }
+      await product.update(
+        {
+          id_tipo_producto: nextTypeId,
+          id_fabricante: parseId(req.body.id_fabricante),
+          titulo: normalizeText(req.body.titulo) || product.titulo,
+          descripcion:
+            req.body.descripcion !== undefined
+              ? normalizeText(req.body.descripcion) || null
+              : product.descripcion,
+          precio:
+            req.body.precio !== undefined && req.body.precio !== ""
+              ? moneyToDb(req.body.precio)
+              : product.precio,
+          stock:
+            req.body.stock !== undefined && req.body.stock !== ""
+              ? Number(req.body.stock)
+              : product.stock,
+          activo:
+            req.body.activo !== undefined ? parseBoolean(req.body.activo, product.activo) : product.activo,
+        },
+        { transaction },
+      );
 
-      await product.update(updates);
-      const updated = await loadProductForSale(product.id_producto);
-      res.json(mapProduct(updated));
-    } catch (error) {
-      res.status(500).json({ error: "Error actualizando producto" });
-    }
-  },
-);
+      await clearProductSubtypeRows(productId, transaction);
+      await saveProductSubtype(productId, req.body, getTypeSlug(tipoProducto), transaction);
+      await persistProductImage(productId, product, req.file, transaction);
+    });
+
+    res.json(mapProduct(await loadProductRecord(productId)));
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || "Error actualizando producto" });
+  }
+});
 
 app.delete("/api/productos/:id", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (req, res) => {
   try {
@@ -843,18 +1393,16 @@ app.delete("/api/productos/:id", authMiddleware, requireRoles(...STAFF_ROLE_IDS)
     if (!product) {
       return res.status(404).json({ error: "Producto no encontrado" });
     }
-
     await product.update({ activo: false });
     res.json({ message: "Producto desactivado correctamente" });
-  } catch (error) {
+  } catch {
     res.status(500).json({ error: "Error eliminando producto" });
   }
 });
 
 app.post("/api/resenas", authMiddleware, async (req, res) => {
   const { id_producto, puntuacion, comentario } = req.body;
-
-  if (!id_producto || !comentario || !puntuacion) {
+  if (!id_producto || !normalizeText(comentario) || !puntuacion) {
     return res.status(400).json({ error: "Producto, puntuacion y comentario son obligatorios" });
   }
 
@@ -868,32 +1416,28 @@ app.post("/api/resenas", authMiddleware, async (req, res) => {
       id_usuario: req.user.id_usuario,
       id_producto,
       puntuacion: Number(puntuacion),
-      comentario,
+      comentario: normalizeText(comentario),
       estado: REVIEW_STATUS_PENDING,
       fecha_resena: new Date(),
     });
 
-    res.status(201).json({
-      message: "Resena enviada para moderacion",
-      review,
-    });
-  } catch (error) {
+    res.status(201).json({ message: "Resena enviada para moderacion", review });
+  } catch {
     res.status(500).json({ error: "Error publicando resena" });
   }
 });
 
 app.get("/api/carrito", authMiddleware, async (req, res) => {
   try {
-    const payload = await buildCartPayload(req.user.id_usuario);
-    res.json(payload);
-  } catch (error) {
+    res.json(await buildCartPayload(req.user.id_usuario));
+  } catch {
     res.status(500).json({ error: "Error obteniendo carrito" });
   }
 });
 
 app.post("/api/carrito", authMiddleware, async (req, res) => {
   const quantityToAdd = Number(req.body.cantidad || 1);
-  const productId = Number(req.body.id_producto);
+  const productId = parseId(req.body.id_producto);
 
   if (!productId || quantityToAdd < 1) {
     return res.status(400).json({ error: "Producto y cantidad validos son requeridos" });
@@ -906,12 +1450,12 @@ app.post("/api/carrito", authMiddleware, async (req, res) => {
       const existing = await CarritoDetalle.findOne({
         where: { id_carrito: cart.id_carrito, id_producto: productId },
         transaction,
-        lock: { level: transaction.LOCK.UPDATE, of: CarritoDetalle } 
+        lock: { level: transaction.LOCK.UPDATE, of: CarritoDetalle },
       });
 
       const nextQuantity = Number(existing?.cantidad || 0) + quantityToAdd;
 
-      if (pricing.stockControlled && nextQuantity > pricing.stockAvailable) {
+      if (nextQuantity > pricing.stockAvailable) {
         const error = new Error("No hay stock suficiente para esa cantidad");
         error.status = 409;
         throw error;
@@ -921,11 +1465,7 @@ app.post("/api/carrito", authMiddleware, async (req, res) => {
         await existing.update({ cantidad: nextQuantity }, { transaction });
       } else {
         await CarritoDetalle.create(
-          {
-            id_carrito: cart.id_carrito,
-            id_producto: productId,
-            cantidad: quantityToAdd,
-          },
+          { id_carrito: cart.id_carrito, id_producto: productId, cantidad: quantityToAdd },
           { transaction },
         );
       }
@@ -941,7 +1481,6 @@ app.post("/api/carrito", authMiddleware, async (req, res) => {
 
 app.put("/api/carrito/:idDetalle", authMiddleware, async (req, res) => {
   const cantidad = Number(req.body.cantidad);
-
   if (!Number.isInteger(cantidad) || cantidad < 1) {
     return res.status(400).json({ error: "La cantidad debe ser mayor o igual a 1" });
   }
@@ -962,8 +1501,7 @@ app.put("/api/carrito/:idDetalle", authMiddleware, async (req, res) => {
       }
 
       const pricing = await resolveLinePricing(detail.id_producto, transaction, true);
-
-      if (pricing.stockControlled && cantidad > pricing.stockAvailable) {
+      if (cantidad > pricing.stockAvailable) {
         const error = new Error("Stock insuficiente para la cantidad seleccionada");
         error.status = 409;
         throw error;
@@ -1004,12 +1542,6 @@ app.delete("/api/carrito/:idDetalle", authMiddleware, async (req, res) => {
 });
 
 app.post("/api/checkout", authMiddleware, async (req, res) => {
-  const { calle_envio, numero_casa_envio, municipio_envio, provincia_envio, id_metodo_pago } = req.body;
-
-  if (!calle_envio || !municipio_envio) {
-    return res.status(400).json({ error: "La direccion de envio requiere calle y municipio" });
-  }
-
   let createdOrderId = null;
 
   try {
@@ -1027,27 +1559,26 @@ app.post("/api/checkout", authMiddleware, async (req, res) => {
         throw error;
       }
 
+      const resolvedAddress = await resolveDireccionPayload(req.body, req.user.id_usuario, transaction);
       const saleLines = [];
       let subtotal = 0;
 
       for (const detail of details) {
         const pricing = await resolveLinePricing(detail.id_producto, transaction, true);
+        const quantity = Number(detail.cantidad || 0);
 
-        if (pricing.stockControlled && Number(detail.cantidad) > pricing.stockAvailable) {
+        if (quantity > pricing.stockAvailable) {
           const error = new Error(`Stock insuficiente para ${pricing.product.titulo}`);
           error.status = 409;
           throw error;
         }
 
-        const quantity = Number(detail.cantidad || 0);
-        const unitPrice = roundMoney(pricing.price);
-        subtotal += unitPrice * quantity;
-
+        subtotal += pricing.price * quantity;
         saleLines.push({
           id_producto: detail.id_producto,
           cantidad: quantity,
-          precio_unitario_venta: moneyToDb(unitPrice),
-          inventoryRow: pricing.inventoryRow,
+          precio_unitario_venta: moneyToDb(pricing.price),
+          stock_after: pricing.stockAvailable - quantity,
         });
       }
 
@@ -1059,15 +1590,12 @@ app.post("/api/checkout", authMiddleware, async (req, res) => {
         {
           id_cliente: req.user.id_usuario,
           id_estado_pedido: ORDER_STATUS_CONFIRMADO,
-          id_metodo_pago: id_metodo_pago || 1,
-          fecha_pedido: new Date(),
+          id_metodo_pago: parseId(req.body.id_metodo_pago) || 1,
           subtotal: moneyToDb(subtotal),
+          costo_envio: moneyToDb(0),
           itbis: moneyToDb(itbis),
           total: moneyToDb(total),
-          calle_envio,
-          numero_casa_envio: numero_casa_envio || null,
-          municipio_envio,
-          provincia_envio: provincia_envio || null,
+          ...resolvedAddress.orderPayload,
         },
         { transaction },
       );
@@ -1079,22 +1607,28 @@ app.post("/api/checkout", authMiddleware, async (req, res) => {
             id_producto: line.id_producto,
             cantidad: line.cantidad,
             precio_unitario_venta: line.precio_unitario_venta,
+            monto_descuento: moneyToDb(0),
           },
           { transaction },
         );
 
-        if (line.inventoryRow) {
-          await line.inventoryRow.update(
-            { stock: Number(line.inventoryRow.stock || 0) - line.cantidad },
-            { transaction },
-          );
-        }
+        await Producto.update(
+          { stock: line.stock_after },
+          { where: { id_producto: line.id_producto }, transaction },
+        );
+
+        await AjusteInventario.create(
+          {
+            id_producto: line.id_producto,
+            id_usuario_administrador: req.user.id_usuario,
+            tipo_ajuste: "Venta",
+            cantidad_ajustada: -line.cantidad,
+          },
+          { transaction },
+        );
       }
 
-      await CarritoDetalle.destroy({
-        where: { id_carrito: cart.id_carrito },
-        transaction,
-      });
+      await CarritoDetalle.destroy({ where: { id_carrito: cart.id_carrito }, transaction });
       await touchCart(cart, transaction);
 
       createdOrderId = pedido.id_pedido;
@@ -1112,57 +1646,52 @@ app.post("/api/checkout", authMiddleware, async (req, res) => {
 
 app.get("/api/pedidos", authMiddleware, async (req, res) => {
   try {
-    const where = STAFF_ROLE_IDS.includes(Number(req.user.id_rol))
-      ? {}
-      : { id_cliente: req.user.id_usuario };
-
+    const where = STAFF_ROLE_IDS.includes(Number(req.user.id_rol)) ? {} : { id_cliente: req.user.id_usuario };
     const orders = await Pedido.findAll({
       where,
-      include: [
-        {
-          model: Usuario,
-          as: "Cliente",
-          attributes: ["id_usuario", "nombre", "apellido", "email"],
-        },
-        {
-          model: EstadoPedido,
-          as: "Estado",
-          attributes: ["id_estado_pedido", "nombre"],
-        },
-        {
-          model: DetallePedido,
-          as: "Detalles",
-          include: [{ model: Producto, as: "Producto", attributes: ["id_producto", "titulo", "imagen_url"] }],
-        },
-      ],
       order: [["fecha_pedido", "DESC"]],
     });
 
-    res.json(
-      orders.map((order) => ({
-        ...order.get({ plain: true }),
-        subtotal: roundMoney(order.subtotal),
-        itbis: roundMoney(order.itbis),
-        total: roundMoney(order.total),
-      })),
-    );
-  } catch (error) {
+    const payload = await Promise.all(orders.map((order) => loadPedidoPayload(order.id_pedido)));
+    res.json(payload);
+  } catch {
     res.status(500).json({ error: "Error obteniendo pedidos" });
+  }
+});
+
+app.get("/api/admin/dashboard", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (_req, res) => {
+  try {
+    const [users, products, orders, pendingReviews, lowStockProducts, pendingCustomMunicipios] = await Promise.all([
+      Usuario.count(),
+      Producto.count({ where: { activo: { [Op.ne]: false } } }),
+      Pedido.findAll({ attributes: ["total"] }),
+      Resena.count({ where: { estado: REVIEW_STATUS_PENDING } }),
+      Producto.count({ where: { activo: { [Op.ne]: false }, stock: { [Op.lt]: 5 } } }),
+      Direccion.count({ where: { municipio_personalizado: { [Op.ne]: null } } }),
+    ]);
+
+    res.json({
+      usuarios: users,
+      productos: products,
+      pedidos: orders.length,
+      totalVentas: roundMoney(orders.reduce((sum, order) => sum + Number(order.total || 0), 0)),
+      resenasPendientes: pendingReviews,
+      itemsBajoStock: lowStockProducts,
+      municipiosPendientes: pendingCustomMunicipios,
+    });
+  } catch {
+    res.status(500).json({ error: "Error obteniendo resumen administrativo" });
   }
 });
 
 app.get("/api/admin/reports", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (req, res) => {
   try {
     const { start, end, key } = getReportDateRange(String(req.query.period || "month"));
-    const queryInterface = sequelize.getQueryInterface();
-    const productSchema = await queryInterface.describeTable("producto");
-    let categoryRows = [];
+    const endExclusive = new Date(end.getTime() + 1);
 
     const [dailyRows] = await sequelize.query(
       `
-      SELECT
-        DATE(p.fecha_pedido) AS fecha,
-        COALESCE(SUM(p.total), 0) AS total
+      SELECT DATE(p.fecha_pedido) AS fecha, COALESCE(SUM(p.total), 0) AS total
       FROM pedido p
       WHERE p.fecha_pedido >= :startDate
         AND p.fecha_pedido < :endDate
@@ -1170,188 +1699,108 @@ app.get("/api/admin/reports", authMiddleware, requireRoles(...STAFF_ROLE_IDS), a
       ORDER BY DATE(p.fecha_pedido) ASC
       `,
       {
-        replacements: {
-          startDate: start,
-          endDate: new Date(end.getTime() + 1),
-        },
+        replacements: { startDate: start, endDate: endExclusive },
       },
     );
 
-    const hasCategoryId = Object.prototype.hasOwnProperty.call(productSchema, "id_categoria");
-    if (hasCategoryId) {
-      try {
-        await queryInterface.describeTable("categoria");
-        const [rows] = await sequelize.query(
-          `
-          SELECT
-            COALESCE(c.nombre, 'Sin categoria') AS categoria,
-            COALESCE(SUM(d.cantidad * d.precio_unitario_venta), 0) AS total
-          FROM detallepedido d
-          INNER JOIN pedido p ON p.id_pedido = d.id_pedido
-          INNER JOIN producto pr ON pr.id_producto = d.id_producto
-          LEFT JOIN categoria c ON c.id_categoria = pr.id_categoria
-          WHERE p.fecha_pedido >= :startDate
-            AND p.fecha_pedido < :endDate
-          GROUP BY COALESCE(c.nombre, 'Sin categoria')
-          ORDER BY total DESC
-          `,
-          {
-            replacements: {
-              startDate: start,
-              endDate: new Date(end.getTime() + 1),
-            },
-          },
-        );
-        categoryRows = rows;
-      } catch {
-        categoryRows = [];
-      }
-    } else {
-      const [rows] = await sequelize.query(
-        `
-        SELECT
-          COALESCE(CAST(pr.id_tipo_producto AS TEXT), 'Sin categoria') AS categoria,
-          COALESCE(SUM(d.cantidad * d.precio_unitario_venta), 0) AS total
-        FROM detallepedido d
-        INNER JOIN pedido p ON p.id_pedido = d.id_pedido
-        INNER JOIN producto pr ON pr.id_producto = d.id_producto
-        WHERE p.fecha_pedido >= :startDate
-          AND p.fecha_pedido < :endDate
-        GROUP BY COALESCE(CAST(pr.id_tipo_producto AS TEXT), 'Sin categoria')
-        ORDER BY total DESC
-        `,
-        {
-          replacements: {
-            startDate: start,
-            endDate: new Date(end.getTime() + 1),
-          },
-        },
-      );
-      categoryRows = rows.map((row) => ({
-        categoria: row.categoria === "Sin categoria" ? row.categoria : `Tipo ${row.categoria}`,
-        total: row.total,
-      }));
-    }
+    const [categoryRows] = await sequelize.query(
+      `
+      SELECT COALESCE(tp.nombre, 'Sin categoria') AS categoria,
+             COALESCE(SUM(d.cantidad * d.precio_unitario_venta), 0) AS total
+      FROM detallepedido d
+      INNER JOIN pedido p ON p.id_pedido = d.id_pedido
+      INNER JOIN producto pr ON pr.id_producto = d.id_producto
+      LEFT JOIN tipoproducto tp ON tp.id_tipo_producto = pr.id_tipo_producto
+      WHERE p.fecha_pedido >= :startDate
+        AND p.fecha_pedido < :endDate
+      GROUP BY COALESCE(tp.nombre, 'Sin categoria')
+      ORDER BY total DESC
+      `,
+      {
+        replacements: { startDate: start, endDate: endExclusive },
+      },
+    );
 
     res.json({
       period: key,
-      range: {
-        from: start.toISOString(),
-        to: end.toISOString(),
-      },
-      dailySales: dailyRows.map((row) => ({
-        fecha: row.fecha,
-        total: roundMoney(row.total),
-      })),
-      categorySales: categoryRows.map((row) => ({
-        categoria: row.categoria,
-        total: roundMoney(row.total),
-      })),
+      range: { from: start.toISOString(), to: end.toISOString() },
+      dailySales: dailyRows.map((row) => ({ fecha: row.fecha, total: roundMoney(row.total) })),
+      categorySales: categoryRows.map((row) => ({ categoria: row.categoria, total: roundMoney(row.total) })),
     });
-  } catch (error) {
+  } catch {
     res.status(500).json({ error: "Error obteniendo reportes de ventas" });
-  }
-});
-
-app.get("/api/admin/dashboard", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (_req, res) => {
-  try {
-    const [users, products, orders, pendingReviews, lowStock] = await Promise.all([
-      Usuario.count(),
-      Producto.count({ where: { activo: { [Op.ne]: false } } }),
-      Pedido.findAll({ attributes: ["total"] }),
-      Resena.count({ where: { estado: REVIEW_STATUS_PENDING } }),
-      VideoJuegoFormato.count({ where: { stock: { [Op.lt]: 5 } } }),
-    ]);
-
-    const totalVentas = roundMoney(
-      orders.reduce((sum, order) => sum + Number(order.total || 0), 0),
-    );
-
-    res.json({
-      usuarios: users,
-      productos: products,
-      pedidos: orders.length,
-      totalVentas,
-      resenasPendientes: pendingReviews,
-      itemsBajoStock: lowStock,
-    });
-  } catch (error) {
-    res.status(500).json({ error: "Error obteniendo resumen administrativo" });
   }
 });
 
 app.get("/api/admin/inventario", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (_req, res) => {
   try {
-    const inventory = await VideoJuegoFormato.findAll({
-      include: [
-        { model: Formato, as: "Formato", attributes: ["id_formato", "nombre"] },
-        {
-          model: VideoJuego,
-          as: "VideoJuego",
-          include: [
-            {
-              model: Producto,
-              as: "Producto",
-              attributes: ["id_producto", "titulo", "imagen_url", "activo"],
-            },
-            { model: Genero, as: "Genero", attributes: ["nombre"] },
-            { model: Plataforma, as: "Plataforma", attributes: ["nombre"] },
-          ],
-        },
-      ],
-      order: [
-        ["stock", "ASC"],
-        [{ model: VideoJuego, as: "VideoJuego" }, { model: Producto, as: "Producto" }, "titulo", "ASC"],
-      ],
+    const products = await Producto.findAll({
+      include: publicProductInclude,
+      where: { activo: { [Op.ne]: false } },
+      order: [["stock", "ASC"], ["titulo", "ASC"]],
     });
 
     res.json(
-      inventory.map((row) => ({
-        id_vj_formato: row.id_vj_formato,
-        id_producto: row.VideoJuego?.Producto?.id_producto || row.id_videojuego,
-        titulo: row.VideoJuego?.Producto?.titulo || "Videojuego",
-        imagen_url: row.VideoJuego?.Producto?.imagen_url || null,
-        formato: row.Formato?.nombre || "General",
-        genero: row.VideoJuego?.Genero?.nombre || null,
-        plataforma: row.VideoJuego?.Plataforma?.nombre || null,
-        stock: Number(row.stock || 0),
-        precio: roundMoney(row.precio),
-        lowStock: Number(row.stock || 0) < 5,
-        activo: row.VideoJuego?.Producto?.activo !== false,
-      })),
+      products.map((product) => {
+        const mapped = mapProduct(product);
+        return {
+          id_producto: mapped.id_producto,
+          titulo: mapped.titulo,
+          imagen_url: mapped.imagen_url,
+          stock: mapped.stock,
+          precio: mapped.precio,
+          lowStock: mapped.stock < 5,
+          activo: mapped.activo !== false,
+          tipo_producto_nombre: mapped.tipo_producto_nombre,
+          formato: mapped.formato_nombre || "General",
+          plataforma: mapped.plataforma_nombre || null,
+          genero: mapped.genero_nombre || null,
+        };
+      }),
     );
-  } catch (error) {
+  } catch {
     res.status(500).json({ error: "Error obteniendo inventario" });
   }
 });
 
-app.put("/api/admin/inventario/:idVjFormato", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (req, res) => {
+app.put("/api/admin/inventario/:idProducto", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (req, res) => {
   const stock = Number(req.body.stock);
-
   if (!Number.isInteger(stock) || stock < 0) {
     return res.status(400).json({ error: "El stock debe ser un entero mayor o igual a 0" });
   }
 
   try {
-    const row = await VideoJuegoFormato.findByPk(req.params.idVjFormato);
-    if (!row) {
-      return res.status(404).json({ error: "Registro de inventario no encontrado" });
+    const product = await Producto.findByPk(req.params.idProducto);
+    if (!product) {
+      return res.status(404).json({ error: "Producto no encontrado" });
     }
 
-    await row.update({ stock });
+    const previous = Number(product.stock || 0);
+    await sequelize.transaction(async (transaction) => {
+      await product.update({ stock }, { transaction });
+      await AjusteInventario.create(
+        {
+          id_producto: product.id_producto,
+          id_usuario_administrador: req.user.id_usuario,
+          tipo_ajuste: "Ajuste manual",
+          cantidad_ajustada: stock - previous,
+        },
+        { transaction },
+      );
+    });
+
     res.json({
       message: "Inventario actualizado",
-      id_vj_formato: row.id_vj_formato,
-      stock: Number(row.stock || 0),
+      id_producto: product.id_producto,
+      stock,
     });
-  } catch (error) {
+  } catch {
     res.status(500).json({ error: "Error actualizando inventario" });
   }
 });
 
 app.patch("/api/admin/pedidos/:idPedido/estado", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (req, res) => {
-  const nextStatus = Number(req.body.id_estado_pedido);
-
+  const nextStatus = parseId(req.body.id_estado_pedido);
   if (!nextStatus) {
     return res.status(400).json({ error: "Debe indicar el id_estado_pedido" });
   }
@@ -1368,11 +1817,8 @@ app.patch("/api/admin/pedidos/:idPedido/estado", authMiddleware, requireRoles(..
     }
 
     await order.update({ id_estado_pedido: nextStatus });
-    res.json({
-      message: "Estado del pedido actualizado",
-      pedido: await loadPedidoPayload(order.id_pedido),
-    });
-  } catch (error) {
+    res.json({ message: "Estado del pedido actualizado", pedido: await loadPedidoPayload(order.id_pedido) });
+  } catch {
     res.status(500).json({ error: "Error actualizando pedido" });
   }
 });
@@ -1381,34 +1827,21 @@ app.get("/api/admin/resenas", authMiddleware, requireRoles(...STAFF_ROLE_IDS), a
   try {
     const reviews = await Resena.findAll({
       include: [
-        {
-          model: Usuario,
-          as: "Usuario",
-          attributes: ["id_usuario", "nombre", "apellido", "email"],
-        },
-        {
-          model: Producto,
-          as: "Producto",
-          attributes: ["id_producto", "titulo", "imagen_url"],
-        },
+        { model: Usuario, as: "Usuario", attributes: ["id_usuario", "nombre", "apellido", "email"] },
+        { model: Producto, as: "Producto", include: publicProductInclude },
       ],
-      order: [
-        ["estado", "ASC"],
-        ["fecha_resena", "DESC"],
-      ],
+      order: [["estado", "ASC"], ["fecha_resena", "DESC"]],
     });
 
-    res.json(reviews);
-  } catch (error) {
+    res.json(reviews.map((review) => ({ ...review.get({ plain: true }), Producto: mapProduct(review.Producto) })));
+  } catch {
     res.status(500).json({ error: "Error obteniendo resenas" });
   }
 });
 
 app.patch("/api/admin/resenas/:idResena", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (req, res) => {
   const allowedStates = [REVIEW_STATUS_APPROVED, REVIEW_STATUS_REJECTED];
-  const estado = req.body.estado;
-
-  if (!allowedStates.includes(estado)) {
+  if (!allowedStates.includes(req.body.estado)) {
     return res.status(400).json({ error: "Estado de resena invalido" });
   }
 
@@ -1419,49 +1852,35 @@ app.patch("/api/admin/resenas/:idResena", authMiddleware, requireRoles(...STAFF_
     }
 
     await review.update({
-      estado,
+      estado: req.body.estado,
       id_moderador: req.user.id_usuario,
       fecha_moderacion: new Date(),
     });
 
-    res.json({ message: `Resena marcada como ${estado}` });
-  } catch (error) {
+    res.json({ message: `Resena marcada como ${req.body.estado}` });
+  } catch {
     res.status(500).json({ error: "Error moderando resena" });
-  }
-});
-
-app.get("/api/usuarios", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (_req, res) => {
-  try {
-    const users = await Usuario.findAll({
-      include: [{ model: Rol, as: "Rol", attributes: ["id_rol", "nombre"] }],
-      order: [["id_usuario", "ASC"]],
-    });
-
-    res.json(users.map(serializeUser));
-  } catch (error) {
-    res.status(500).json({ error: "Error obteniendo usuarios" });
   }
 });
 
 app.get("/api/admin/usuarios", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (req, res) => {
   try {
     const isManager = Number(req.user.id_rol) === 3;
-    const where = isManager ? { id_rol: 1 } : {};
     const users = await Usuario.findAll({
-      where,
+      where: isManager ? { id_rol: 1 } : {},
       include: [{ model: Rol, as: "Rol", attributes: ["id_rol", "nombre"] }],
       order: [["id_usuario", "ASC"]],
     });
 
     res.json(users.map(serializeUser));
-  } catch (error) {
+  } catch {
     res.status(500).json({ error: "Error obteniendo usuarios administrativos" });
   }
 });
 
 app.patch("/api/admin/usuarios/:idUsuario", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (req, res) => {
   try {
-    const idUsuario = Number(req.params.idUsuario);
+    const idUsuario = parseId(req.params.idUsuario);
     const actorRole = Number(req.user.id_rol);
     const isManager = actorRole === 3;
     const target = await Usuario.findByPk(idUsuario, {
@@ -1479,12 +1898,12 @@ app.patch("/api/admin/usuarios/:idUsuario", authMiddleware, requireRoles(...STAF
     const updates = {};
     for (const field of ["nombre", "apellido", "telefono"]) {
       if (req.body[field] !== undefined) {
-        updates[field] = req.body[field] ? String(req.body[field]).trim() : null;
+        updates[field] = normalizeText(req.body[field]) || null;
       }
     }
 
     if (req.body.email !== undefined) {
-      const normalizedEmail = String(req.body.email || "").trim().toLowerCase();
+      const normalizedEmail = normalizeLower(req.body.email);
       if (!normalizedEmail) {
         return res.status(400).json({ error: "El email no puede estar vacio" });
       }
@@ -1496,19 +1915,18 @@ app.patch("/api/admin/usuarios/:idUsuario", authMiddleware, requireRoles(...STAF
     }
 
     if (req.body.id_rol !== undefined) {
-      const nextRole = Number(req.body.id_rol);
+      const nextRole = parseId(req.body.id_rol);
       if (!nextRole) {
         return res.status(400).json({ error: "Rol invalido" });
       }
       if (isManager && nextRole !== 1) {
         return res.status(403).json({ error: "Los gerentes solo pueden asignar rol de usuario" });
       }
-
       updates.id_rol = nextRole;
     }
 
     if (req.body.activo !== undefined) {
-      const nextActive = Boolean(req.body.activo);
+      const nextActive = parseBoolean(req.body.activo, true);
       if (Number(target.id_usuario) === Number(req.user.id_usuario) && !nextActive) {
         return res.status(400).json({ error: "No puedes desactivar tu propia cuenta" });
       }
@@ -1524,12 +1942,143 @@ app.patch("/api/admin/usuarios/:idUsuario", authMiddleware, requireRoles(...STAF
       include: [{ model: Rol, as: "Rol", attributes: ["id_rol", "nombre"] }],
     });
 
-    res.json({
-      message: "Usuario actualizado",
-      user: serializeUser(refreshed),
+    res.json({ message: "Usuario actualizado", user: serializeUser(refreshed) });
+  } catch {
+    res.status(500).json({ error: "Error actualizando usuario" });
+  }
+});
+
+app.get("/api/admin/municipios-pendientes", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (_req, res) => {
+  try {
+    const rows = await Direccion.findAll({
+      where: { municipio_personalizado: { [Op.ne]: null } },
+      include: [{ model: Provincia, as: "Provincia", attributes: ["id_provincia", "nombre"] }],
+      order: [["id_direccion", "DESC"]],
+    });
+
+    res.json(
+      rows.map((row) => ({
+        id_direccion: row.id_direccion,
+        id_provincia: row.id_provincia,
+        provincia_nombre: row.Provincia?.nombre || null,
+        municipio_personalizado: row.municipio_personalizado,
+        calle: row.calle,
+        numero_casa: row.numero_casa,
+      })),
+    );
+  } catch {
+    res.status(500).json({ error: "Error obteniendo municipios pendientes" });
+  }
+});
+
+app.post("/api/admin/municipios-pendientes/validar", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (req, res) => {
+  try {
+    const idProvincia = parseId(req.body.id_provincia);
+    const nombre = normalizeText(req.body.nombre);
+    assertNotEmpty(nombre, "El municipio requiere un nombre");
+
+    const province = await Provincia.findByPk(idProvincia);
+    if (!province) {
+      return res.status(400).json({ error: "Provincia invalida" });
+    }
+
+    let createdMunicipio = null;
+    await sequelize.transaction(async (transaction) => {
+      const [municipio] = await Municipio.findOrCreate({
+        where: { id_provincia: idProvincia, nombre },
+        defaults: { id_provincia: idProvincia, nombre },
+        transaction,
+      });
+
+      createdMunicipio = municipio;
+
+      await Direccion.update(
+        {
+          id_municipio: municipio.id_municipio,
+          municipio_personalizado: null,
+        },
+        {
+          where: {
+            id_provincia: idProvincia,
+            municipio_personalizado: nombre,
+          },
+          transaction,
+        },
+      );
+    });
+
+    res.status(201).json({
+      message: "Municipio oficial registrado y direcciones actualizadas",
+      municipio: createdMunicipio,
     });
   } catch (error) {
-    res.status(500).json({ error: "Error actualizando usuario" });
+    res.status(error.status || 500).json({ error: error.message || "Error validando municipio" });
+  }
+});
+
+app.get("/api/admin/catalogos", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (_req, res) => {
+  try {
+    res.json(await loadCatalogsPayload());
+  } catch {
+    res.status(500).json({ error: "Error obteniendo catalogos administrativos" });
+  }
+});
+
+app.post("/api/admin/catalogos/:catalogKey", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (req, res) => {
+  try {
+    const config = catalogDefinitions[req.params.catalogKey];
+    if (!config) {
+      return res.status(404).json({ error: "Catalogo no soportado" });
+    }
+
+    const nombre = normalizeText(req.body.nombre);
+    assertNotEmpty(nombre, "El nombre no puede estar vacio");
+
+    const payload = { nombre };
+    for (const field of config.extra) {
+      payload[field] = parseId(req.body[field]);
+    }
+
+    const created = await config.model.create(payload);
+    res.status(201).json(created);
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || "Error creando catalogo" });
+  }
+});
+
+app.put("/api/admin/catalogos/:catalogKey/:id", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (req, res) => {
+  try {
+    const config = catalogDefinitions[req.params.catalogKey];
+    if (!config) {
+      return res.status(404).json({ error: "Catalogo no soportado" });
+    }
+
+    const record = await config.model.findByPk(req.params.id);
+    if (!record) {
+      return res.status(404).json({ error: "Registro no encontrado" });
+    }
+
+    const payload = {};
+    if (req.body.nombre !== undefined) {
+      const nombre = normalizeText(req.body.nombre);
+      assertNotEmpty(nombre, "El nombre no puede estar vacio");
+      payload.nombre = nombre;
+    }
+
+    for (const field of config.extra) {
+      if (req.body[field] !== undefined) {
+        payload[field] = parseId(req.body[field]);
+      }
+    }
+
+    if (!Object.keys(payload).length) {
+      return res.status(400).json({ error: "No se enviaron cambios validos" });
+    }
+
+    await record.update(payload);
+    res.json(record);
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || "Error actualizando catalogo" });
   }
 });
 
@@ -1539,7 +2088,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = {
-  app,
-  sequelize,
-};
+module.exports = { app, sequelize };
