@@ -1263,9 +1263,10 @@ app.post("/api/login", async (req, res) => {
 
     const token = jwt.sign({ id_usuario: user.id_usuario }, JWT_SECRET, { expiresIn: "2h" });
     res.json({ token, user: serializeUser(user) });
-  } catch {
-    res.status(500).json({ error: "Error en login" });
-  }
+  } catch (error) {
+      console.error("Error en login:", error);
+      res.status(500).json({ error: "Error en login", detail: error.message });
+    }
 });
 
 app.post("/api/usuarios", async (req, res) => {
