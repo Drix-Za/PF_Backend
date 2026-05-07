@@ -9,17 +9,23 @@ const multer = require("multer");
 const { v2: cloudinary } = require("cloudinary");
 const { Sequelize, DataTypes, Op } = require("sequelize");
 
+//const { generateInvoicePdf, invoiceStorageDir } = require("./services/invoiceService");
+const { validateCouponForCheckout } = require("./services/couponService");
+const { canManageTargetUser, getUserHierarchyLevel } = require("./middleware/hierarchy");
+
 const JWT_SECRET = process.env.JWT_SECRET || "clave_secreta_para_pruebas";
 const PORT = Number(process.env.PORT) || 3000;
 const ITBIS_RATE = 0.18;
 const ORDER_STATUS_CONFIRMADO = 2;
+const ORDER_STATUS_PAGADO = "Pagado";
 const REVIEW_STATUS_PENDING = "Pendiente";
 const REVIEW_STATUS_APPROVED = "Aprobada";
 const REVIEW_STATUS_REJECTED = "Rechazada";
-const STAFF_ROLE_IDS = [2, 3];
+const STAFF_MIN_HIERARCHY = 2;
 const PRODUCT_TYPE_VIDEOGAME = "videojuego";
 const PRODUCT_TYPE_ACCESSORY = "accesorio";
 const PRODUCT_TYPE_COLLECTIBLE = "coleccionable";
+const ROLE_ATTRIBUTES = ["id_rol", "nombre", "nivel_jerarquia"];
 
 const app = express();
 
@@ -73,6 +79,7 @@ const Plataforma = defineIdNameModel("Plataforma", "plataforma", "id_plataforma"
 const Formato = defineIdNameModel("Formato", "formato", "id_formato");
 const MetodoPago = defineIdNameModel("MetodoPago", "metodopago", "id_metodo_pago");
 const EstadoPedido = defineIdNameModel("EstadoPedido", "estadopedido", "id_estado_pedido");
+const EstadoEnvio = defineIdNameModel("EstadoEnvio", "estadoenvio", "id_estado_envio");
 const Provincia = defineIdNameModel("Provincia", "provincia", "id_provincia");
 const TipoAccesorio = defineIdNameModel("TipoAccesorio", "tipoaccesorio", "id_tipo_accesorio");
 const TipoColeccionable = defineIdNameModel(
@@ -81,21 +88,56 @@ const TipoColeccionable = defineIdNameModel(
   "id_tipo_coleccionable",
 );
 
-const Usuario = sequelize.define(
-  "Usuario",
+const Patrocinador = sequelize.define(
+  "Patrocinador",
   {
-    id_usuario: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
-    id_rol: DataTypes.INTEGER,
-    email: DataTypes.STRING,
-    contrasena_hash: DataTypes.STRING,
+    id_patrocinador: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
     nombre: DataTypes.STRING,
-    apellido: DataTypes.STRING,
-    telefono: DataTypes.STRING,
-    fecha_registro: DataTypes.DATE,
-    activo: DataTypes.BOOLEAN,
-    avatar_url: DataTypes.STRING,
+    imagen_url: DataTypes.STRING, // Para la URL de Cloudinary
   },
-  { tableName: "usuario" },
+  { tableName: "patrocinador", timestamps: false }
+);
+
+const Descuento = sequelize.define(
+  "Descuento",
+  {
+    id_descuento: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    tipo_descuento: DataTypes.STRING, // e.g., 'porcentaje', 'fijo'
+    valor: DataTypes.DECIMAL,
+    fecha_inicio: DataTypes.DATE,
+    fecha_fin: DataTypes.DATE,
+  },
+  { tableName: "descuento", timestamps: false },
+);
+
+const Cupon = sequelize.define(
+  "Cupon",
+  {
+    id_descuento: { 
+      type: DataTypes.INTEGER, 
+      primaryKey: true,
+      references: { model: 'descuento', key: 'id_descuento' }
+    },
+    id_patrocinador: { 
+      type: DataTypes.INTEGER,
+      references: { model: 'patrocinador', key: 'id_patrocinador' }
+    },
+    codigo_cupon: { type: DataTypes.STRING, unique: true },
+    max_usos_cliente: DataTypes.INTEGER,
+    monto_minimo_pedido: DataTypes.DECIMAL,
+    fecha_vencimiento: DataTypes.DATEONLY, // Se mantiene por compatibilidad, pero Descuento ya tiene fecha_fin
+  },
+  { tableName: "cupon", timestamps: false },
+);
+
+const CuponUsuario = sequelize.define(
+  "CuponUsuario",
+  {
+    id_usuario: { type: DataTypes.INTEGER, primaryKey: true },
+    id_descuento: { type: DataTypes.INTEGER, primaryKey: true },
+    usado_en: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  },
+  { tableName: "cupon_usuario", timestamps: false },
 );
 
 const Producto = sequelize.define(
@@ -113,6 +155,46 @@ const Producto = sequelize.define(
     stock: DataTypes.INTEGER,
   },
   { tableName: "producto" },
+);
+
+const DescuentoProducto = sequelize.define(
+  "DescuentoProducto",
+  {
+    id_descuento: { type: DataTypes.INTEGER, primaryKey: true },
+    id_producto: { type: DataTypes.INTEGER, primaryKey: true },
+  },
+  { tableName: "descuentoproducto", timestamps: false }
+);
+
+// --- BLOQUE DE RELACIONES CORREGIDO ---
+
+// Relación Cupon -> Descuento (Alias: 'InfoDescuento')
+Cupon.belongsTo(Descuento, { foreignKey: 'id_descuento', as: 'InfoDescuento' });
+
+// Relación Cupon -> Patrocinador (Alias: 'Patrocinador')
+Cupon.belongsTo(Patrocinador, { foreignKey: 'id_patrocinador', as: 'Patrocinador' });
+
+// Relación DescuentoProducto -> Descuento (Alias: 'DescuentoAsociado')
+DescuentoProducto.belongsTo(Descuento, { foreignKey: 'id_descuento', as: 'DescuentoAsociado' });
+
+// Relación DescuentoProducto -> Producto (Alias: 'Producto')
+DescuentoProducto.belongsTo(Producto, { foreignKey: 'id_producto', as: 'Producto' });
+
+const Usuario = sequelize.define(
+  "Usuario",
+  {
+    id_usuario: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    id_rol: DataTypes.INTEGER,
+    email: DataTypes.STRING,
+    contrasena_hash: DataTypes.STRING,
+    nombre: DataTypes.STRING,
+    apellido: DataTypes.STRING,
+    telefono: DataTypes.STRING,
+    fecha_registro: DataTypes.DATE,
+    activo: DataTypes.BOOLEAN,
+    avatar_url: DataTypes.STRING,
+  },
+  { tableName: "usuario" },
 );
 
 const VideoJuego = sequelize.define(
@@ -187,6 +269,10 @@ const Direccion = sequelize.define(
     es_principal: DataTypes.BOOLEAN,
     id_provincia: DataTypes.INTEGER,
     municipio_personalizado: DataTypes.STRING,
+    latitud: DataTypes.DECIMAL,
+    longitud: DataTypes.DECIMAL,
+    sector: DataTypes.STRING,
+    referencia: DataTypes.TEXT,
   },
   { tableName: "direccion" },
 );
@@ -224,10 +310,6 @@ const Pedido = sequelize.define(
     costo_envio: DataTypes.DECIMAL,
     itbis: DataTypes.DECIMAL,
     total: DataTypes.DECIMAL,
-    calle_envio: DataTypes.STRING,
-    numero_casa_envio: DataTypes.STRING,
-    municipio_envio: DataTypes.STRING,
-    provincia_envio: DataTypes.STRING,
     id_direccion: DataTypes.INTEGER,
   },
   { tableName: "pedido" },
@@ -245,6 +327,19 @@ const DetallePedido = sequelize.define(
     monto_descuento: DataTypes.DECIMAL,
   },
   { tableName: "detallepedido" },
+);
+
+const Envio = sequelize.define(
+  "Envio",
+  {
+    id_envio: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    id_pedido: DataTypes.INTEGER,
+    id_estado_envio: DataTypes.INTEGER,
+    codigo_seguimiento: DataTypes.STRING,
+    transportista: DataTypes.STRING,
+    fecha_actualizacion: DataTypes.DATE,
+  },
+  { tableName: "envio" },
 );
 
 const Resena = sequelize.define(
@@ -278,6 +373,10 @@ const AjusteInventario = sequelize.define(
 );
 
 Usuario.belongsTo(Rol, { foreignKey: "id_rol", as: "Rol" });
+Descuento.hasOne(Cupon, { foreignKey: "id_descuento", as: "Cupon" });
+Cupon.belongsTo(Descuento, { foreignKey: "id_descuento", as: "Descuento" });
+CuponUsuario.belongsTo(Usuario, { foreignKey: "id_usuario", as: "Usuario" });
+CuponUsuario.belongsTo(Descuento, { foreignKey: "id_descuento", as: "Descuento" });
 Producto.belongsTo(TipoProducto, { foreignKey: "id_tipo_producto", as: "TipoProducto" });
 Producto.belongsTo(Fabricante, { foreignKey: "id_fabricante", as: "Fabricante" });
 Producto.hasMany(ImagenProducto, { foreignKey: "id_producto", as: "Imagenes" });
@@ -325,18 +424,32 @@ CarritoDetalle.belongsTo(Producto, { foreignKey: "id_producto", as: "Producto" }
 Pedido.belongsTo(Usuario, { foreignKey: "id_cliente", as: "Cliente" });
 Pedido.belongsTo(EstadoPedido, { foreignKey: "id_estado_pedido", as: "Estado" });
 Pedido.belongsTo(MetodoPago, { foreignKey: "id_metodo_pago", as: "MetodoPago" });
-Pedido.belongsTo(Direccion, { foreignKey: "id_direccion", as: "Direccion" });
+Pedido.belongsTo(Direccion, { foreignKey: "id_direccion", as: "ubicacion" });
 Pedido.hasMany(DetallePedido, { foreignKey: "id_pedido", as: "Detalles" });
+Pedido.hasOne(Envio, { foreignKey: "id_pedido", as: "Envio" });
 DetallePedido.belongsTo(Pedido, { foreignKey: "id_pedido", as: "Pedido" });
 DetallePedido.belongsTo(Producto, { foreignKey: "id_producto", as: "Producto" });
+DetallePedido.belongsTo(Descuento, { foreignKey: "id_descuento", as: "Descuento" });
+Envio.belongsTo(Pedido, { foreignKey: "id_pedido", as: "Pedido" });
+Envio.belongsTo(EstadoEnvio, { foreignKey: "id_estado_envio", as: "EstadoEnvio" });
 
 Producto.hasMany(Resena, { foreignKey: "id_producto", as: "Resenas" });
 Resena.belongsTo(Producto, { foreignKey: "id_producto", as: "Producto" });
 Resena.belongsTo(Usuario, { foreignKey: "id_usuario", as: "Usuario" });
 
-app.use(cors());
+const corsOptions = {
+  origin: true,
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  exposedHeaders: ["Content-Disposition"],
+};
+
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
 app.use(compression());
 app.use(express.json());
+//app.use("/facturas", express.static(invoiceStorageDir));
 
 const uploadMemory = multer({ storage: multer.memoryStorage() });
 
@@ -354,6 +467,12 @@ const parseBoolean = (value, fallback = false) => {
   if (typeof value === "boolean") return value;
   return !["false", "0", "no"].includes(String(value).toLowerCase());
 };
+const parseDecimal = (value) => {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+const getRoleHierarchy = getUserHierarchyLevel;
 const toJsonList = (value) => {
   if (Array.isArray(value)) return value;
   if (value === undefined || value === null || value === "") return [];
@@ -513,28 +632,65 @@ const authMiddleware = async (req, res, next) => {
   try {
     const payload = jwt.verify(authHeader.split(" ")[1], JWT_SECRET);
     const user = await Usuario.findByPk(payload.id_usuario, {
-      include: [{ model: Rol, as: "Rol", attributes: ["id_rol", "nombre"] }],
+      include: [{ model: Rol, as: "Rol", attributes: ROLE_ATTRIBUTES }],
     });
 
     if (!user || user.activo === false) {
       return res.status(401).json({ error: "Usuario no autorizado" });
     }
 
+    user.nivel_jerarquia = Number(user.Rol?.nivel_jerarquia ?? user.nivel_jerarquia ?? 0);
     req.user = user;
     next();
   } catch {
     res.status(401).json({ error: "Token invalido" });
   }
 };
+// Fix roles 1
+const requireRoles = (...roles) => (req, res, next) => {
+  // 1. Función para buscar el nivel en cualquier parte del objeto (Recursiva simple)
+  const buscarNivel = (obj) => {
+      if (!obj) return 0;
 
-const requireRoles =
-  (...roles) =>
-  (req, res, next) => {
-    if (!req.user || !roles.includes(Number(req.user.id_rol))) {
-      return res.status(403).json({ error: "Acceso denegado" });
+      // 1. Intentamos obtener el objeto de datos (limpio o de dataValues)
+      const user = obj.dataValues || obj;
+      const rol = user.Rol?.dataValues || user.Rol || user.rol?.dataValues || user.rol;
+
+      // 2. Extraemos el valor y lo forzamos a número
+      // Si 'rol' existe, buscamos el nivel; si no, buscamos en el usuario directamente
+      const nivelRaw = rol ? rol.nivel_jerarquia : user.nivel_jerarquia;
+
+      // Log de emergencia para ver el valor exacto antes de convertirlo
+      if (nivelRaw !== undefined) {
+        console.log(`[DEBUG NEO-GAMING] Valor crudo encontrado: "${nivelRaw}" (Tipo: ${typeof nivelRaw})`);
+      }
+
+      return nivelRaw ? Number(nivelRaw) : 0;
+    };
+
+  const userLevel = buscarNivel(req.user);
+  const minimumLevel = Math.min(...roles.map((role) => Number(role)));
+
+  // DEBUG PARA NEO-GAMING
+  if (userLevel < minimumLevel) {
+    console.log("--- FALLO DE AUTORIZACIÓN ---");
+    console.log("ID Usuario:", req.user?.id_usuario || req.user?.dataValues?.id_usuario);
+    console.log("Nivel detectado:", userLevel);
+    console.log("¿Existe objeto Rol?:", !!(req.user?.Rol || req.user?.dataValues?.Rol));
+    // Esto imprimirá solo las claves del objeto Rol para no saturar la consola
+    if (req.user?.Rol || req.user?.dataValues?.Rol) {
+      console.log("Campos en Rol:", Object.keys(req.user?.Rol?.dataValues || req.user?.Rol || {}));
     }
-    next();
-  };
+  }
+
+  if (!req.user || userLevel < minimumLevel) {
+    return res.status(403).json({ 
+      error: "Acceso denegado", 
+      debug: { nivel: userLevel, requerido: minimumLevel } 
+    });
+  }
+  next();
+};
 
 const getTypeSlug = (tipo) => normalizeLower(tipo?.nombre).replace(/\s+/g, "");
 
@@ -567,6 +723,16 @@ const touchCart = (cart, transaction) =>
   cart.update({ fecha_actualizacion: new Date() }, { transaction });
 
 const loadProductRecord = async (idProducto, transaction, lock = false, includeReviews = false) => {
+  // PostgreSQL no permite FOR UPDATE cuando hay LEFT OUTER JOINs (nullable side).
+  // Solución: primero bloqueamos la fila de Producto sin joins, luego cargamos
+  // los datos completos con todos los includes en una query separada.
+  if (transaction && lock) {
+    await Producto.findByPk(idProducto, {
+      transaction,
+      lock: { level: transaction.LOCK.UPDATE, of: Producto },
+    });
+  }
+
   const include = [...publicProductInclude];
   if (includeReviews) {
     include.push({
@@ -587,7 +753,6 @@ const loadProductRecord = async (idProducto, transaction, lock = false, includeR
   return Producto.findByPk(idProducto, {
     include,
     transaction,
-    lock: transaction && lock ? { level: transaction.LOCK.UPDATE, of: Producto } : undefined,
     order: includeReviews ? [[{ model: Resena, as: "Resenas" }, "fecha_resena", "DESC"]] : undefined,
   });
 };
@@ -666,6 +831,10 @@ const mapDireccion = (addressInstance) => {
     ...address,
     provincia_nombre: address.Provincia?.nombre || null,
     municipio_nombre: address.municipio_personalizado || address.Municipio?.nombre || null,
+    latitud: address.latitud !== undefined && address.latitud !== null ? Number(address.latitud) : null,
+    longitud: address.longitud !== undefined && address.longitud !== null ? Number(address.longitud) : null,
+    sector: address.sector || null,
+    referencia: address.referencia || null,
   };
 };
 
@@ -673,34 +842,38 @@ const resolveDireccionPayload = async (payload, userId, transaction) => {
   const idDireccion = parseId(payload.id_direccion);
 
   if (idDireccion) {
-    const savedAddress = await Direccion.findOne({
+    // 1. BLOQUEO LIMPIO: Bloqueamos solo el registro de la tabla Direccion.
+    // Al no tener 'include', PostgreSQL no genera el error de Outer Join.
+    const addressLock = await Direccion.findOne({
       where: { id_direccion: idDireccion, id_usuario: userId },
-      include: [
-        { model: Provincia, as: "Provincia", attributes: ["id_provincia", "nombre"] },
-        { model: Municipio, as: "Municipio", attributes: ["id_municipio", "nombre", "id_provincia"] },
-      ],
       transaction,
-      lock: transaction ? true : undefined,
+      lock: transaction ? transaction.LOCK.UPDATE : undefined,
     });
 
-    if (!savedAddress) {
+    if (!addressLock) {
       const error = new Error("La direccion seleccionada no existe");
       error.status = 404;
       throw error;
     }
 
+    // 2. CARGA DE DATOS: Ahora que la fila está bloqueada, traemos las relaciones.
+    // Ya no necesitamos 'lock: true' aquí porque la fila ya está protegida.
+    const savedAddress = await Direccion.findOne({
+      where: { id_direccion: idDireccion },
+      include: [
+        { model: Provincia, as: "Provincia", attributes: ["id_provincia", "nombre"] },
+        { model: Municipio, as: "Municipio", attributes: ["id_municipio", "nombre", "id_provincia"] },
+      ],
+      transaction
+    });
+
     return {
       record: savedAddress,
-      orderPayload: {
-        calle_envio: savedAddress.calle,
-        numero_casa_envio: savedAddress.numero_casa,
-        municipio_envio: savedAddress.municipio_personalizado || savedAddress.Municipio?.nombre || "",
-        provincia_envio: savedAddress.Provincia?.nombre || "",
-        id_direccion: savedAddress.id_direccion,
-      },
+      ubicacion: mapDireccion(savedAddress),
     };
   }
 
+  // --- El resto de la lógica de creación se mantiene igual ---
   const calle = normalizeText(payload.calle);
   const numeroCasa = normalizeText(payload.numero_casa);
   const detalle = normalizeText(payload.detalle) || null;
@@ -708,6 +881,10 @@ const resolveDireccionPayload = async (payload, userId, transaction) => {
   const idMunicipio = parseId(payload.id_municipio);
   const municipioPersonalizado = normalizeText(payload.municipio_personalizado);
   const guardarDireccion = parseBoolean(payload.guardar_direccion, false);
+  const latitud = parseDecimal(payload.latitud);
+  const longitud = parseDecimal(payload.longitud);
+  const sector = normalizeText(payload.sector) || null;
+  const referencia = normalizeText(payload.referencia) || normalizeText(payload.detalle) || null;
 
   assertNotEmpty(calle, "La direccion requiere calle");
   assertNotEmpty(numeroCasa, "La direccion requiere numero de casa o referencia");
@@ -765,38 +942,32 @@ const resolveDireccionPayload = async (payload, userId, transaction) => {
     municipioDisplay = municipio.nombre;
   }
 
-  let savedRecord = null;
+  const currentPrincipal = await Direccion.findOne({
+    where: { id_usuario: userId, es_principal: true },
+    transaction,
+  });
 
-  if (guardarDireccion) {
-    const currentPrincipal = await Direccion.findOne({
-      where: { id_usuario: userId, es_principal: true },
-      transaction,
-    });
-
-    savedRecord = await Direccion.create(
-      {
-        id_usuario: userId,
-        id_municipio: municipalityForSave,
-        calle,
-        numero_casa: numeroCasa,
-        detalle,
-        es_principal: !currentPrincipal,
-        id_provincia: idProvincia,
-        municipio_personalizado: municipioPersonalizado || null,
-      },
-      { transaction },
-    );
-  }
+  const savedRecord = await Direccion.create(
+    {
+      id_usuario: userId,
+      id_municipio: municipalityForSave,
+      calle,
+      numero_casa: numeroCasa,
+      detalle,
+      es_principal: guardarDireccion ? !currentPrincipal : false,
+      id_provincia: idProvincia,
+      municipio_personalizado: municipioPersonalizado || null,
+      latitud,
+      longitud,
+      sector,
+      referencia,
+    },
+    { transaction },
+  );
 
   return {
     record: savedRecord,
-    orderPayload: {
-      calle_envio: calle,
-      numero_casa_envio: numeroCasa,
-      municipio_envio: municipioDisplay,
-      provincia_envio: province.nombre,
-      id_direccion: savedRecord?.id_direccion || null,
-    },
+    ubicacion: mapDireccion(savedRecord),
   };
 };
 
@@ -806,9 +977,10 @@ const loadPedidoPayload = async (pedidoId) => {
       { model: Usuario, as: "Cliente", attributes: ["id_usuario", "nombre", "apellido", "email"] },
       { model: EstadoPedido, as: "Estado", attributes: ["id_estado_pedido", "nombre"] },
       { model: MetodoPago, as: "MetodoPago", attributes: ["id_metodo_pago", "nombre"] },
+      { model: Envio, as: "Envio", required: false, include: [{ model: EstadoEnvio, as: "EstadoEnvio", attributes: ["id_estado_envio", "nombre"] }] },
       {
         model: Direccion,
-        as: "Direccion",
+        as: "ubicacion",
         required: false,
         include: [
           { model: Provincia, as: "Provincia", attributes: ["id_provincia", "nombre"] },
@@ -818,7 +990,10 @@ const loadPedidoPayload = async (pedidoId) => {
       {
         model: DetallePedido,
         as: "Detalles",
-        include: [{ model: Producto, as: "Producto", include: publicProductInclude }],
+        include: [
+          { model: Producto, as: "Producto", include: publicProductInclude },
+          { model: Descuento, as: "Descuento", required: false },
+        ],
       },
     ],
   });
@@ -832,14 +1007,43 @@ const loadPedidoPayload = async (pedidoId) => {
     costo_envio: roundMoney(plain.costo_envio),
     itbis: roundMoney(plain.itbis),
     total: roundMoney(plain.total),
-    Direccion: mapDireccion(plain.Direccion),
+    ubicacion: mapDireccion(plain.ubicacion),
+    Direccion: mapDireccion(plain.ubicacion),
+    Envio: plain.Envio
+      ? {
+        ...plain.Envio,
+        EstadoEnvio: plain.Envio.EstadoEnvio || null,
+        }
+      : null,
     Detalles: (plain.Detalles || []).map((detail) => ({
       ...detail,
       precio_unitario_venta: roundMoney(detail.precio_unitario_venta),
       monto_descuento: roundMoney(detail.monto_descuento),
       Producto: mapProduct(detail.Producto),
+      Descuento: detail.Descuento || null,
     })),
   };
+};
+
+const allocateDiscountAcrossLines = (lines, discountAmount) => {
+  const totalGross = lines.reduce((sum, line) => sum + Number(line.lineTotal || 0), 0);
+  const discountTotal = roundMoney(discountAmount);
+
+  if (discountTotal <= 0 || totalGross <= 0) {
+    return lines.map((line) => ({ ...line, discountLine: 0 }));
+  }
+
+  let allocated = 0;
+  return lines.map((line, index) => {
+    if (index === lines.length - 1) {
+      const discountLine = roundMoney(discountTotal - allocated);
+      return { ...line, discountLine };
+    }
+
+    const discountLine = roundMoney((discountTotal * Number(line.lineTotal || 0)) / totalGross);
+    allocated = roundMoney(allocated + discountLine);
+    return { ...line, discountLine };
+  });
 };
 
 const getReportDateRange = (filter) => {
@@ -972,6 +1176,7 @@ const catalogDefinitions = {
   formatos: { model: Formato, idField: "id_formato", extra: [] },
   metodosPago: { model: MetodoPago, idField: "id_metodo_pago", extra: [] },
   estadosPedido: { model: EstadoPedido, idField: "id_estado_pedido", extra: [] },
+  estadosEnvio: { model: EstadoEnvio, idField: "id_estado_envio", extra: [] },
   provincias: { model: Provincia, idField: "id_provincia", extra: [] },
   tiposAccesorio: { model: TipoAccesorio, idField: "id_tipo_accesorio", extra: [] },
   tiposColeccionable: { model: TipoColeccionable, idField: "id_tipo_coleccionable", extra: [] },
@@ -987,6 +1192,7 @@ const loadCatalogsPayload = async () => {
     formatos,
     metodosPago,
     estadosPedido,
+    estadosEnvio,
     provincias,
     municipios,
     tiposAccesorio,
@@ -999,6 +1205,7 @@ const loadCatalogsPayload = async () => {
     Formato.findAll({ order: [["nombre", "ASC"]] }),
     MetodoPago.findAll({ order: [["nombre", "ASC"]] }),
     EstadoPedido.findAll({ order: [["id_estado_pedido", "ASC"]] }),
+    EstadoEnvio.findAll({ order: [["id_estado_envio", "ASC"]] }),
     Provincia.findAll({ order: [["nombre", "ASC"]] }),
     Municipio.findAll({ order: [["nombre", "ASC"]] }),
     TipoAccesorio.findAll({ order: [["nombre", "ASC"]] }),
@@ -1013,6 +1220,7 @@ const loadCatalogsPayload = async () => {
     formatos,
     metodosPago,
     estadosPedido,
+    estadosEnvio,
     provincias,
     municipios,
     tiposAccesorio,
@@ -1026,7 +1234,7 @@ app.post("/api/login", async (req, res) => {
   try {
     const user = await Usuario.findOne({
       where: { email: normalizeLower(email) },
-      include: [{ model: Rol, as: "Rol", attributes: ["id_rol", "nombre"] }],
+      include: [{ model: Rol, as: "Rol", attributes: ROLE_ATTRIBUTES }],
     });
 
     if (!user) {
@@ -1125,7 +1333,7 @@ app.put("/api/perfil", authMiddleware, uploadMemory.single("avatar"), async (req
     }
 
     const refreshedUser = await Usuario.findByPk(req.user.id_usuario, {
-      include: [{ model: Rol, as: "Rol", attributes: ["id_rol", "nombre"] }],
+      include: [{ model: Rol, as: "Rol", attributes: ROLE_ATTRIBUTES }],
     });
 
     res.json(serializeUser(refreshedUser));
@@ -1187,6 +1395,10 @@ app.put("/api/direcciones/:idDireccion", authMiddleware, async (req, res) => {
       const idProvincia = parseId(req.body.id_provincia);
       const idMunicipio = parseId(req.body.id_municipio);
       const municipioPersonalizado = normalizeText(req.body.municipio_personalizado);
+      const latitud = parseDecimal(req.body.latitud);
+      const longitud = parseDecimal(req.body.longitud);
+      const sector = normalizeText(req.body.sector) || null;
+      const referencia = normalizeText(req.body.referencia) || normalizeText(req.body.detalle) || null;
 
       assertNotEmpty(req.body.calle, "La direccion requiere calle");
       assertNotEmpty(req.body.numero_casa, "La direccion requiere numero de casa o referencia");
@@ -1234,6 +1446,10 @@ app.put("/api/direcciones/:idDireccion", authMiddleware, async (req, res) => {
           id_municipio: municipalityToSave,
           municipio_personalizado: municipioPersonalizado || null,
           es_principal: nextPrincipal,
+          latitud,
+          longitud,
+          sector,
+          referencia,
         },
         { transaction },
       );
@@ -1290,7 +1506,7 @@ app.get("/api/productos/:id", async (req, res) => {
   }
 });
 
-app.post("/api/productos", authMiddleware, requireRoles(...STAFF_ROLE_IDS), uploadMemory.single("imagen"), async (req, res) => {
+app.post("/api/productos", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), uploadMemory.single("imagen"), async (req, res) => {
   try {
     const productId = await sequelize.transaction(async (transaction) => {
       const idTipoProducto = parseId(req.body.id_tipo_producto);
@@ -1328,7 +1544,7 @@ app.post("/api/productos", authMiddleware, requireRoles(...STAFF_ROLE_IDS), uplo
   }
 });
 
-app.put("/api/productos/:id", authMiddleware, requireRoles(...STAFF_ROLE_IDS), uploadMemory.single("imagen"), async (req, res) => {
+app.put("/api/productos/:id", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), uploadMemory.single("imagen"), async (req, res) => {
   try {
     const productId = parseId(req.params.id);
 
@@ -1387,7 +1603,7 @@ app.put("/api/productos/:id", authMiddleware, requireRoles(...STAFF_ROLE_IDS), u
   }
 });
 
-app.delete("/api/productos/:id", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (req, res) => {
+app.delete("/api/productos/:id", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), async (req, res) => {
   try {
     const product = await Producto.findByPk(req.params.id);
     if (!product) {
@@ -1541,8 +1757,43 @@ app.delete("/api/carrito/:idDetalle", authMiddleware, async (req, res) => {
   }
 });
 
+app.post("/api/cupones/validar", authMiddleware, async (req, res) => {
+  try {
+    const codigoCupon = normalizeText(req.body.codigo_cupon || req.body.codigoCupon);
+    assertNotEmpty(codigoCupon, "Debes indicar un código de cupón");
+
+    // Dentro del try de app.post
+    const cart = await buildCartPayload(req.user.id_usuario);
+
+    const validation = await validateCouponForCheckout({
+      models: { Cupon, CuponUsuario, Descuento, DescuentoProducto, Patrocinador }, // Añade los nuevos modelos
+      userId: req.user.id_usuario,
+      codigoCupon,
+      cartItems: cart.items || [], // <--- IMPORTANTE: Pasa los items aquí
+      subtotal: cart.subtotal,
+      finalize: false,
+    });
+
+    const subtotalConDescuento = roundMoney(cart.subtotal - (validation?.discountAmount || 0));
+    const itbis = roundMoney(subtotalConDescuento * ITBIS_RATE);
+
+    res.json({
+      aplicado: true,
+      cupon: validation?.coupon || null,
+      subtotal: cart.subtotal,
+      descuento: roundMoney(validation?.discountAmount || 0),
+      subtotal_con_descuento: subtotalConDescuento,
+      itbis,
+      total: roundMoney(subtotalConDescuento + itbis),
+    });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || "No se pudo validar el cupón" });
+  }
+});
+
 app.post("/api/checkout", authMiddleware, async (req, res) => {
   let createdOrderId = null;
+  let appliedCoupon = null;
 
   try {
     await sequelize.transaction(async (transaction) => {
@@ -1579,35 +1830,48 @@ app.post("/api/checkout", authMiddleware, async (req, res) => {
           cantidad: quantity,
           precio_unitario_venta: moneyToDb(pricing.price),
           stock_after: pricing.stockAvailable - quantity,
+          lineTotal: roundMoney(pricing.price * quantity),
         });
       }
 
       subtotal = roundMoney(subtotal);
-      const itbis = roundMoney(subtotal * ITBIS_RATE);
-      const total = roundMoney(subtotal + itbis);
+      const couponResult = await validateCouponForCheckout({
+        models: { Cupon, CuponUsuario, Descuento },
+        userId: req.user.id_usuario,
+        codigoCupon: req.body.codigo_cupon,
+        subtotal,
+        transaction,
+        finalize: true,
+      });
+      appliedCoupon = couponResult?.coupon || null;
+      const allocatedLines = allocateDiscountAcrossLines(saleLines, couponResult?.discountAmount || 0);
+      const discountedSubtotal = roundMoney(subtotal - (couponResult?.discountAmount || 0));
+      const itbis = roundMoney(discountedSubtotal * ITBIS_RATE);
+      const total = roundMoney(discountedSubtotal + itbis);
 
       const pedido = await Pedido.create(
         {
           id_cliente: req.user.id_usuario,
           id_estado_pedido: ORDER_STATUS_CONFIRMADO,
           id_metodo_pago: parseId(req.body.id_metodo_pago) || 1,
-          subtotal: moneyToDb(subtotal),
+          subtotal: moneyToDb(discountedSubtotal),
           costo_envio: moneyToDb(0),
           itbis: moneyToDb(itbis),
           total: moneyToDb(total),
-          ...resolvedAddress.orderPayload,
+          id_direccion: resolvedAddress.record?.id_direccion || null,
         },
         { transaction },
       );
 
-      for (const line of saleLines) {
+      for (const line of allocatedLines) {
         await DetallePedido.create(
           {
             id_pedido: pedido.id_pedido,
             id_producto: line.id_producto,
             cantidad: line.cantidad,
             precio_unitario_venta: line.precio_unitario_venta,
-            monto_descuento: moneyToDb(0),
+            id_descuento: couponResult?.coupon?.id_descuento || null,
+            monto_descuento: moneyToDb(line.discountLine || 0),
           },
           { transaction },
         );
@@ -1638,6 +1902,7 @@ app.post("/api/checkout", authMiddleware, async (req, res) => {
       message: "Pedido confirmado correctamente",
       pedido: await loadPedidoPayload(createdOrderId),
       carrito: await buildCartPayload(req.user.id_usuario),
+      cupon: appliedCoupon,
     });
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message || "Error procesando checkout" });
@@ -1646,7 +1911,7 @@ app.post("/api/checkout", authMiddleware, async (req, res) => {
 
 app.get("/api/pedidos", authMiddleware, async (req, res) => {
   try {
-    const where = STAFF_ROLE_IDS.includes(Number(req.user.id_rol)) ? {} : { id_cliente: req.user.id_usuario };
+    const where = getUserHierarchyLevel(req.user) >= 2 ? {} : { id_cliente: req.user.id_usuario };
     const orders = await Pedido.findAll({
       where,
       order: [["fecha_pedido", "DESC"]],
@@ -1659,7 +1924,7 @@ app.get("/api/pedidos", authMiddleware, async (req, res) => {
   }
 });
 
-app.get("/api/admin/dashboard", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (_req, res) => {
+app.get("/api/admin/dashboard", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), async (_req, res) => {
   try {
     const [users, products, orders, pendingReviews, lowStockProducts, pendingCustomMunicipios] = await Promise.all([
       Usuario.count(),
@@ -1684,7 +1949,7 @@ app.get("/api/admin/dashboard", authMiddleware, requireRoles(...STAFF_ROLE_IDS),
   }
 });
 
-app.get("/api/admin/reports", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (req, res) => {
+app.get("/api/admin/reports", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), async (req, res) => {
   try {
     const { start, end, key } = getReportDateRange(String(req.query.period || "month"));
     const endExclusive = new Date(end.getTime() + 1);
@@ -1732,7 +1997,7 @@ app.get("/api/admin/reports", authMiddleware, requireRoles(...STAFF_ROLE_IDS), a
   }
 });
 
-app.get("/api/admin/inventario", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (_req, res) => {
+app.get("/api/admin/inventario", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), async (_req, res) => {
   try {
     const products = await Producto.findAll({
       include: publicProductInclude,
@@ -1763,7 +2028,7 @@ app.get("/api/admin/inventario", authMiddleware, requireRoles(...STAFF_ROLE_IDS)
   }
 });
 
-app.put("/api/admin/inventario/:idProducto", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (req, res) => {
+app.put("/api/admin/inventario/:idProducto", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), async (req, res) => {
   const stock = Number(req.body.stock);
   if (!Number.isInteger(stock) || stock < 0) {
     return res.status(400).json({ error: "El stock debe ser un entero mayor o igual a 0" });
@@ -1799,7 +2064,7 @@ app.put("/api/admin/inventario/:idProducto", authMiddleware, requireRoles(...STA
   }
 });
 
-app.patch("/api/admin/pedidos/:idPedido/estado", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (req, res) => {
+app.patch("/api/admin/pedidos/:idPedido/estado", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), async (req, res) => {
   const nextStatus = parseId(req.body.id_estado_pedido);
   if (!nextStatus) {
     return res.status(400).json({ error: "Debe indicar el id_estado_pedido" });
@@ -1816,14 +2081,27 @@ app.patch("/api/admin/pedidos/:idPedido/estado", authMiddleware, requireRoles(..
       return res.status(400).json({ error: "Estado de pedido invalido" });
     }
 
+    const currentStatus = await EstadoPedido.findByPk(order.id_estado_pedido);
+    const isTransitionToPaid =
+      normalizeLower(status.nombre) === normalizeLower(ORDER_STATUS_PAGADO) &&
+      normalizeLower(currentStatus?.nombre) !== normalizeLower(ORDER_STATUS_PAGADO);
+
     await order.update({ id_estado_pedido: nextStatus });
-    res.json({ message: "Estado del pedido actualizado", pedido: await loadPedidoPayload(order.id_pedido) });
+
+    const updatedPedido = await loadPedidoPayload(order.id_pedido);
+    //const invoice = isTransitionToPaid ? await generateInvoicePdf({ order: updatedPedido }) : null;
+
+    res.json({
+      message: "Estado del pedido actualizado",
+      pedido: updatedPedido,
+      //factura_pdf_url: invoice?.publicUrl || null,
+    });
   } catch {
     res.status(500).json({ error: "Error actualizando pedido" });
   }
 });
 
-app.get("/api/admin/resenas", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (_req, res) => {
+app.get("/api/admin/resenas", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), async (_req, res) => {
   try {
     const reviews = await Resena.findAll({
       include: [
@@ -1839,7 +2117,7 @@ app.get("/api/admin/resenas", authMiddleware, requireRoles(...STAFF_ROLE_IDS), a
   }
 });
 
-app.patch("/api/admin/resenas/:idResena", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (req, res) => {
+app.patch("/api/admin/resenas/:idResena", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), async (req, res) => {
   const allowedStates = [REVIEW_STATUS_APPROVED, REVIEW_STATUS_REJECTED];
   if (!allowedStates.includes(req.body.estado)) {
     return res.status(400).json({ error: "Estado de resena invalido" });
@@ -1863,36 +2141,38 @@ app.patch("/api/admin/resenas/:idResena", authMiddleware, requireRoles(...STAFF_
   }
 });
 
-app.get("/api/admin/usuarios", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (req, res) => {
+app.get("/api/admin/usuarios", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), async (req, res) => {
   try {
-    const isManager = Number(req.user.id_rol) === 3;
+    const actorHierarchy = getRoleHierarchy(req.user);
     const users = await Usuario.findAll({
-      where: isManager ? { id_rol: 1 } : {},
-      include: [{ model: Rol, as: "Rol", attributes: ["id_rol", "nombre"] }],
+      include: [{ model: Rol, as: "Rol", attributes: ROLE_ATTRIBUTES }],
       order: [["id_usuario", "ASC"]],
     });
 
-    res.json(users.map(serializeUser));
+    res.json(
+      users
+        .filter((user) => Number(user.id_usuario) !== Number(req.user.id_usuario))
+        .filter((user) => getRoleHierarchy(user) <= actorHierarchy)
+        .map(serializeUser),
+    );
   } catch {
     res.status(500).json({ error: "Error obteniendo usuarios administrativos" });
   }
 });
 
-app.patch("/api/admin/usuarios/:idUsuario", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (req, res) => {
+app.patch("/api/admin/usuarios/:idUsuario", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), async (req, res) => {
   try {
     const idUsuario = parseId(req.params.idUsuario);
-    const actorRole = Number(req.user.id_rol);
-    const isManager = actorRole === 3;
     const target = await Usuario.findByPk(idUsuario, {
-      include: [{ model: Rol, as: "Rol", attributes: ["id_rol", "nombre"] }],
+      include: [{ model: Rol, as: "Rol", attributes: ROLE_ATTRIBUTES }],
     });
 
     if (!target) {
       return res.status(404).json({ error: "Usuario no encontrado" });
     }
 
-    if (isManager && [2, 3].includes(Number(target.id_rol))) {
-      return res.status(403).json({ error: "Los gerentes no pueden gestionar administradores ni gerentes" });
+    if (!canManageTargetUser(req.user, target)) {
+      return res.status(403).json({ error: "No tienes permisos para gestionar este usuario" });
     }
 
     const updates = {};
@@ -1919,8 +2199,14 @@ app.patch("/api/admin/usuarios/:idUsuario", authMiddleware, requireRoles(...STAF
       if (!nextRole) {
         return res.status(400).json({ error: "Rol invalido" });
       }
-      if (isManager && nextRole !== 1) {
-        return res.status(403).json({ error: "Los gerentes solo pueden asignar rol de usuario" });
+      const nextRoleRecord = await Rol.findByPk(nextRole);
+      if (!nextRoleRecord) {
+        return res.status(400).json({ error: "Rol invalido" });
+      }
+      if (Number(nextRoleRecord.nivel_jerarquia ?? 0) >= getRoleHierarchy(req.user)) {
+        return res.status(403).json({
+          error: "No puedes asignar un rol que no esté por debajo de tu jerarquía",
+        });
       }
       updates.id_rol = nextRole;
     }
@@ -1939,7 +2225,7 @@ app.patch("/api/admin/usuarios/:idUsuario", authMiddleware, requireRoles(...STAF
 
     await target.update(updates);
     const refreshed = await Usuario.findByPk(idUsuario, {
-      include: [{ model: Rol, as: "Rol", attributes: ["id_rol", "nombre"] }],
+      include: [{ model: Rol, as: "Rol", attributes: ROLE_ATTRIBUTES }],
     });
 
     res.json({ message: "Usuario actualizado", user: serializeUser(refreshed) });
@@ -1948,7 +2234,29 @@ app.patch("/api/admin/usuarios/:idUsuario", authMiddleware, requireRoles(...STAF
   }
 });
 
-app.get("/api/admin/municipios-pendientes", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (_req, res) => {
+app.delete("/api/admin/usuarios/:idUsuario", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), async (req, res) => {
+  try {
+    const idUsuario = parseId(req.params.idUsuario);
+    const target = await Usuario.findByPk(idUsuario, {
+      include: [{ model: Rol, as: "Rol", attributes: ROLE_ATTRIBUTES }],
+    });
+
+    if (!target) {
+      return res.status(404).json({ error: "Usuario no encontrado" });
+    }
+
+    if (!canManageTargetUser(req.user, target)) {
+      return res.status(403).json({ error: "No tienes permisos para borrar este usuario" });
+    }
+
+    await target.update({ activo: false });
+    res.json({ message: "Usuario desactivado correctamente" });
+  } catch {
+    res.status(500).json({ error: "Error desactivando usuario" });
+  }
+});
+
+app.get("/api/admin/municipios-pendientes", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), async (_req, res) => {
   try {
     const rows = await Direccion.findAll({
       where: { municipio_personalizado: { [Op.ne]: null } },
@@ -1971,7 +2279,7 @@ app.get("/api/admin/municipios-pendientes", authMiddleware, requireRoles(...STAF
   }
 });
 
-app.post("/api/admin/municipios-pendientes/validar", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (req, res) => {
+app.post("/api/admin/municipios-pendientes/validar", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), async (req, res) => {
   try {
     const idProvincia = parseId(req.body.id_provincia);
     const nombre = normalizeText(req.body.nombre);
@@ -2016,7 +2324,7 @@ app.post("/api/admin/municipios-pendientes/validar", authMiddleware, requireRole
   }
 });
 
-app.get("/api/admin/catalogos", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (_req, res) => {
+app.get("/api/admin/catalogos", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), async (_req, res) => {
   try {
     res.json(await loadCatalogsPayload());
   } catch {
@@ -2024,7 +2332,7 @@ app.get("/api/admin/catalogos", authMiddleware, requireRoles(...STAFF_ROLE_IDS),
   }
 });
 
-app.post("/api/admin/catalogos/:catalogKey", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (req, res) => {
+app.post("/api/admin/catalogos/:catalogKey", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), async (req, res) => {
   try {
     const config = catalogDefinitions[req.params.catalogKey];
     if (!config) {
@@ -2046,7 +2354,7 @@ app.post("/api/admin/catalogos/:catalogKey", authMiddleware, requireRoles(...STA
   }
 });
 
-app.put("/api/admin/catalogos/:catalogKey/:id", authMiddleware, requireRoles(...STAFF_ROLE_IDS), async (req, res) => {
+app.put("/api/admin/catalogos/:catalogKey/:id", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), async (req, res) => {
   try {
     const config = catalogDefinitions[req.params.catalogKey];
     if (!config) {
