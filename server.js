@@ -14,6 +14,7 @@ const { validateCouponForCheckout } = require("./services/couponService");
 const { canManageTargetUser, getUserHierarchyLevel } = require("./middleware/hierarchy");
 
 const JWT_SECRET = process.env.JWT_SECRET || "clave_secreta_para_pruebas";
+const JWT_EXPIRES_IN = String(process.env.JWT_EXPIRES_IN || "2h").trim() || "2h";
 const PORT = Number(process.env.PORT) || 3000;
 const ITBIS_RATE = 0.18;
 const ORDER_STATUS_CONFIRMADO = 2;
@@ -437,8 +438,38 @@ Producto.hasMany(Resena, { foreignKey: "id_producto", as: "Resenas" });
 Resena.belongsTo(Producto, { foreignKey: "id_producto", as: "Producto" });
 Resena.belongsTo(Usuario, { foreignKey: "id_usuario", as: "Usuario" });
 
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  process.env.FRONTEND_ORIGIN,
+  process.env.CORS_ALLOWED_ORIGINS,
+]
+  .flatMap((value) => String(value || "").split(","))
+  .map((value) => value.trim())
+  .filter(Boolean);
+
+const originMatches = (origin, pattern) => {
+  if (!origin || !pattern) return false;
+  if (pattern === origin) return true;
+  if (!pattern.includes("*")) return false;
+
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+  return new RegExp(`^${escaped}$`).test(origin);
+};
+
 const corsOptions = {
-  origin: true,
+  origin(origin, callback) {
+    if (!origin || !allowedOrigins.length) {
+      callback(null, true);
+      return;
+    }
+
+    if (allowedOrigins.some((pattern) => originMatches(origin, pattern))) {
+      callback(null, true);
+      return;
+    }
+
+    callback(new Error(`Origen no permitido por CORS: ${origin}`));
+  },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
@@ -642,8 +673,10 @@ const authMiddleware = async (req, res, next) => {
     user.nivel_jerarquia = Number(user.Rol?.nivel_jerarquia ?? user.nivel_jerarquia ?? 0);
     req.user = user;
     next();
-  } catch {
-    res.status(401).json({ error: "Token invalido" });
+  } catch (error) {
+    res.status(401).json({
+      error: error?.name === "TokenExpiredError" ? "Token expirado" : "Token invalido",
+    });
   }
 };
 // Fix roles 1
@@ -1261,8 +1294,8 @@ app.post("/api/login", async (req, res) => {
       return res.status(403).json({ error: "La cuenta esta desactivada" });
     }
 
-    const token = jwt.sign({ id_usuario: user.id_usuario }, JWT_SECRET, { expiresIn: "2h" });
-    res.json({ token, user: serializeUser(user) });
+    const token = jwt.sign({ id_usuario: user.id_usuario }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+    res.json({ token, user: serializeUser(user), expires_in: JWT_EXPIRES_IN });
   } catch (error) {
       console.error("Error en login:", error);
       res.status(500).json({ error: "Error en login", detail: error.message });
