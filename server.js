@@ -226,6 +226,7 @@ const VideoJuegoFormato = sequelize.define(
     id_vj_formato: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
     id_videojuego: DataTypes.INTEGER,
     id_formato: DataTypes.INTEGER,
+    precio: DataTypes.DECIMAL,
   },
   { tableName: "videojuegoformato" },
 );
@@ -548,6 +549,7 @@ const ensureDatabaseCompatibility = async () => {
   await ensureColumn("producto", "imagen_url", "character varying(255)");
   await ensureColumn("producto", "precio", "numeric(10,2) DEFAULT 0.00");
   await ensureColumn("producto", "stock", "integer DEFAULT 0");
+  await ensureColumn("videojuegoformato", "precio", "numeric(10,2) DEFAULT 0.00 NOT NULL");
   await ensureColumn("rol", "nivel_jerarquia", "integer DEFAULT 0");
 
   await ensureTable(
@@ -720,6 +722,27 @@ const toJsonList = (value) => {
   return [];
 };
 
+const parseFormatoId = (value) => {
+  if (value && typeof value === "object") {
+    return parseId(value.id_formato ?? value.id ?? value.Formato?.id_formato);
+  }
+  return parseId(value);
+};
+
+const getVideoGameFormatIds = (payload) => {
+  const rootFormatos = toJsonList(payload?.formatos);
+  const nestedFormatos = toJsonList(payload?.VideoJuego?.Formatos);
+  const formatos = rootFormatos.length ? rootFormatos : nestedFormatos;
+  return [...new Set(formatos.map(parseFormatoId).filter(Boolean))];
+};
+
+const getVideoGameMainPrice = (payload, fallback = null) => {
+  const rawPrice = payload?.precio_base ?? payload?.precio;
+  if (rawPrice === undefined || rawPrice === null || rawPrice === "") return fallback;
+  const parsedPrice = parseDecimal(rawPrice);
+  return parsedPrice === null ? null : roundMoney(parsedPrice);
+};
+
 const serializeUser = (user) => {
   if (!user) return null;
   const plain = typeof user.get === "function" ? user.get({ plain: true }) : { ...user };
@@ -844,6 +867,7 @@ const mapProduct = (productInstance) => {
   const formatos = (product.VideoJuego?.Formatos || []).map((item) => ({
     id_vj_formato: item.id_vj_formato,
     id_formato: item.id_formato,
+    precio: roundMoney(item.precio),
     nombre: item.Formato?.nombre || null,
   }));
   const reviewList = product.Resenas || [];
@@ -1348,14 +1372,21 @@ const clearProductSubtypeRows = async (productId, transaction) => {
   ]);
 };
 
-const saveProductSubtype = async (productId, reqBody, typeSlug, transaction) => {
+const saveProductSubtype = async (productId, reqBody, typeSlug, transaction, fallbackPrice = null) => {
   if (typeSlug === PRODUCT_TYPE_VIDEOGAME) {
-    const idGenero = parseId(reqBody.id_genero);
-    const idPlataforma = parseId(reqBody.id_plataforma);
-    const formatos = toJsonList(reqBody.formatos).map(parseId).filter(Boolean);
+    const idGenero = parseId(reqBody.id_genero ?? reqBody.VideoJuego?.id_genero);
+    const idPlataforma = parseId(reqBody.id_plataforma ?? reqBody.VideoJuego?.id_plataforma);
+    const formatos = getVideoGameFormatIds(reqBody);
+    const precioPrincipal = getVideoGameMainPrice(reqBody, fallbackPrice);
 
     if (!idGenero || !idPlataforma || !formatos.length) {
       const error = new Error("Los videojuegos requieren genero, plataforma y al menos un formato");
+      error.status = 400;
+      throw error;
+    }
+
+    if (precioPrincipal === null) {
+      const error = new Error("Los videojuegos requieren un precio principal valido");
       error.status = 400;
       throw error;
     }
@@ -1365,14 +1396,17 @@ const saveProductSubtype = async (productId, reqBody, typeSlug, transaction) => 
         id_producto: productId,
         id_genero: idGenero,
         id_plataforma: idPlataforma,
-        fecha_lanzamiento: normalizeText(reqBody.fecha_lanzamiento) || null,
+        fecha_lanzamiento: normalizeText(reqBody.fecha_lanzamiento ?? reqBody.VideoJuego?.fecha_lanzamiento) || null,
       },
       { transaction },
     );
 
     await Promise.all(
-      [...new Set(formatos)].map((id_formato) =>
-        VideoJuegoFormato.create({ id_videojuego: productId, id_formato }, { transaction }),
+      formatos.map((id_formato) =>
+        VideoJuegoFormato.create(
+          { id_videojuego: productId, id_formato, precio: moneyToDb(precioPrincipal) },
+          { transaction },
+        ),
       ),
     );
     return;
@@ -1804,20 +1838,28 @@ app.post("/api/productos", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), up
 
       assertNotEmpty(req.body.titulo, "El titulo es obligatorio");
 
+      const precioProducto = getVideoGameMainPrice(req.body);
+
       const product = await Producto.create(
         {
           id_tipo_producto: idTipoProducto,
           id_fabricante: parseId(req.body.id_fabricante),
           titulo: normalizeText(req.body.titulo),
           descripcion: normalizeText(req.body.descripcion) || null,
-          precio: moneyToDb(req.body.precio),
+          precio: moneyToDb(precioProducto ?? req.body.precio),
           stock: Number(req.body.stock ?? 0),
           activo: parseBoolean(req.body.activo, true),
         },
         { transaction },
       );
 
-      await saveProductSubtype(product.id_producto, req.body, getTypeSlug(tipoProducto), transaction);
+      await saveProductSubtype(
+        product.id_producto,
+        req.body,
+        getTypeSlug(tipoProducto),
+        transaction,
+        product.precio,
+      );
       await persistProductImage(product.id_producto, product, req.file, transaction);
       return product.id_producto;
     });
@@ -1863,8 +1905,9 @@ app.put("/api/productos/:id", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY),
               ? normalizeText(req.body.descripcion) || null
               : product.descripcion,
           precio:
-            req.body.precio !== undefined && req.body.precio !== ""
-              ? moneyToDb(req.body.precio)
+            req.body.precio !== undefined ||
+            req.body.precio_base !== undefined
+              ? moneyToDb(getVideoGameMainPrice(req.body, product.precio) ?? product.precio)
               : product.precio,
           stock:
             req.body.stock !== undefined && req.body.stock !== ""
@@ -1877,7 +1920,7 @@ app.put("/api/productos/:id", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY),
       );
 
       await clearProductSubtypeRows(productId, transaction);
-      await saveProductSubtype(productId, req.body, getTypeSlug(tipoProducto), transaction);
+      await saveProductSubtype(productId, req.body, getTypeSlug(tipoProducto), transaction, product.precio);
       await persistProductImage(productId, product, req.file, transaction);
     });
 
