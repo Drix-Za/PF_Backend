@@ -572,6 +572,46 @@ const ensureDatabaseCompatibility = async () => {
   await ensureColumn("usuario", "activo", "boolean DEFAULT true");
   await ensureColumn("usuario", "avatar_url", "character varying(255)");
 
+  await ensureTable(
+    "carritocabecera",
+    `
+    CREATE TABLE carritocabecera (
+      id_carrito SERIAL PRIMARY KEY,
+      id_usuario integer NOT NULL REFERENCES usuario(id_usuario) ON DELETE CASCADE,
+      fecha_actualizacion timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+    )
+    `,
+  );
+  await ensureColumn("carritocabecera", "id_carrito", "SERIAL");
+  await ensureColumn("carritocabecera", "id_usuario", "integer");
+  await ensureColumn(
+    "carritocabecera",
+    "fecha_actualizacion",
+    "timestamp with time zone DEFAULT CURRENT_TIMESTAMP",
+  );
+  await sequelize.query(
+    "CREATE UNIQUE INDEX IF NOT EXISTS carritocabecera_id_usuario_unique ON carritocabecera (id_usuario)",
+  );
+
+  await ensureTable(
+    "carritodetalle",
+    `
+    CREATE TABLE carritodetalle (
+      id_carrito_detalle SERIAL PRIMARY KEY,
+      id_carrito integer NOT NULL REFERENCES carritocabecera(id_carrito) ON DELETE CASCADE,
+      id_producto integer NOT NULL REFERENCES producto(id_producto) ON DELETE CASCADE,
+      cantidad integer NOT NULL DEFAULT 1
+    )
+    `,
+  );
+  await ensureColumn("carritodetalle", "id_carrito_detalle", "SERIAL");
+  await ensureColumn("carritodetalle", "id_carrito", "integer");
+  await ensureColumn("carritodetalle", "id_producto", "integer");
+  await ensureColumn("carritodetalle", "cantidad", "integer DEFAULT 1");
+  await sequelize.query(
+    "CREATE UNIQUE INDEX IF NOT EXISTS carritodetalle_carrito_producto_unique ON carritodetalle (id_carrito, id_producto)",
+  );
+
   const [legacyUserColumns] = await sequelize.query(
     `
     SELECT column_name
@@ -929,7 +969,7 @@ const assertNotEmpty = (value, message) => {
 };
 
 const getOrCreateCart = async (idUsuario, transaction) => {
-  const [rows] = await sequelize.query(
+  const result = await sequelize.query(
     `
     INSERT INTO carritocabecera (id_usuario, fecha_actualizacion)
     VALUES (:idUsuario, CURRENT_TIMESTAMP)
@@ -945,6 +985,7 @@ const getOrCreateCart = async (idUsuario, transaction) => {
     },
   );
 
+  const rows = Array.isArray(result[0]) ? result[0] : result;
   return rows[0];
 };
 
