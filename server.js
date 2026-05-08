@@ -22,6 +22,17 @@ const ORDER_STATUS_PAGADO = "Pagado";
 const REVIEW_STATUS_PENDING = "Pendiente";
 const REVIEW_STATUS_APPROVED = "Aprobada";
 const REVIEW_STATUS_REJECTED = "Rechazada";
+const REVIEW_STATUS_ALIASES = {
+  pendiente: REVIEW_STATUS_PENDING,
+  aprobada: REVIEW_STATUS_APPROVED,
+  aprobado: REVIEW_STATUS_APPROVED,
+  approve: REVIEW_STATUS_APPROVED,
+  approved: REVIEW_STATUS_APPROVED,
+  rechazada: REVIEW_STATUS_REJECTED,
+  rechazado: REVIEW_STATUS_REJECTED,
+  reject: REVIEW_STATUS_REJECTED,
+  rejected: REVIEW_STATUS_REJECTED,
+};
 const STAFF_MIN_HIERARCHY = 2;
 const PRODUCT_TYPE_VIDEOGAME = "videojuego";
 const PRODUCT_TYPE_ACCESSORY = "accesorio";
@@ -442,6 +453,8 @@ const allowedOrigins = [
   process.env.FRONTEND_URL,
   process.env.FRONTEND_ORIGIN,
   process.env.CORS_ALLOWED_ORIGINS,
+  process.env.NODE_ENV !== "production" ? "http://localhost:*" : "",
+  process.env.NODE_ENV !== "production" ? "http://127.0.0.1:*" : "",
 ]
   .flatMap((value) => String(value || "").split(","))
   .map((value) => value.trim())
@@ -489,6 +502,138 @@ const roundMoney = (value) => Number(toNumber(value).toFixed(2));
 const moneyToDb = (value) => roundMoney(value).toFixed(2);
 const normalizeText = (value) => String(value ?? "").trim();
 const normalizeLower = (value) => normalizeText(value).toLowerCase();
+const normalizeReviewStatus = (value) => REVIEW_STATUS_ALIASES[normalizeLower(value)] || null;
+const quoteIdentifier = (identifier) => `"${String(identifier).replace(/"/g, '""')}"`;
+
+const ensureTable = async (tableName, definitionSql) => {
+  const [tables] = await sequelize.query(
+    `
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+      AND table_name = :tableName
+    LIMIT 1
+    `,
+    { replacements: { tableName } },
+  );
+
+  if (!tables.length) {
+    await sequelize.query(definitionSql);
+  }
+};
+
+const ensureColumn = async (tableName, columnName, definitionSql) => {
+  const [columns] = await sequelize.query(
+    `
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = :tableName
+      AND column_name = :columnName
+    LIMIT 1
+    `,
+    { replacements: { tableName, columnName } },
+  );
+
+  if (!columns.length) {
+    await sequelize.query(
+      `ALTER TABLE ${quoteIdentifier(tableName)} ADD COLUMN ${quoteIdentifier(columnName)} ${definitionSql}`,
+    );
+  }
+};
+
+const ensureDatabaseCompatibility = async () => {
+  await sequelize.authenticate();
+
+  await ensureColumn("producto", "imagen_url", "character varying(255)");
+  await ensureColumn("producto", "precio", "numeric(10,2) DEFAULT 0.00");
+  await ensureColumn("producto", "stock", "integer DEFAULT 0");
+  await ensureColumn("rol", "nivel_jerarquia", "integer DEFAULT 0");
+
+  await ensureTable(
+    "imagenproducto",
+    `
+    CREATE TABLE imagenproducto (
+      id_imagen SERIAL PRIMARY KEY,
+      id_producto integer NOT NULL REFERENCES producto(id_producto) ON DELETE CASCADE,
+      url character varying(500) NOT NULL,
+      es_principal boolean DEFAULT false NOT NULL
+    )
+    `,
+  );
+
+  await ensureColumn("usuario", "id_rol", "integer DEFAULT 1");
+  await ensureColumn("usuario", "email", "character varying(100)");
+  await ensureColumn("usuario", "contrasena_hash", "character varying(255)");
+  await ensureColumn("usuario", "nombre", "character varying(50)");
+  await ensureColumn("usuario", "apellido", "character varying(50)");
+  await ensureColumn("usuario", "telefono", "character varying(15)");
+  await ensureColumn("usuario", "fecha_registro", "timestamp with time zone DEFAULT CURRENT_TIMESTAMP");
+  await ensureColumn("usuario", "activo", "boolean DEFAULT true");
+  await ensureColumn("usuario", "avatar_url", "character varying(255)");
+
+  const [legacyUserColumns] = await sequelize.query(
+    `
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'usuario'
+      AND column_name IN ('usuario', 'password')
+    `,
+  );
+  const legacyUserColumnNames = new Set(legacyUserColumns.map((column) => column.column_name));
+
+  if (legacyUserColumnNames.has("usuario") && legacyUserColumnNames.has("password")) {
+    await sequelize.query("ALTER TABLE usuario ALTER COLUMN usuario DROP NOT NULL");
+    await sequelize.query("ALTER TABLE usuario ALTER COLUMN password DROP NOT NULL");
+    await sequelize.query(`
+      UPDATE usuario
+      SET email = COALESCE(email, usuario),
+          contrasena_hash = COALESCE(contrasena_hash, password),
+          nombre = COALESCE(nombre, usuario),
+          apellido = COALESCE(apellido, ''),
+          activo = COALESCE(activo, true)
+      WHERE usuario IS NOT NULL
+         OR password IS NOT NULL
+    `);
+  }
+
+  await ensureColumn("direccion", "id_provincia", "integer");
+  await ensureColumn("direccion", "municipio_personalizado", "character varying(100)");
+  await ensureColumn("direccion", "latitud", "numeric(10,8)");
+  await ensureColumn("direccion", "longitud", "numeric(11,8)");
+  await ensureColumn("direccion", "sector", "character varying(100)");
+  await ensureColumn("direccion", "referencia", "text");
+  await ensureColumn("pedido", "id_direccion", "integer");
+
+  await ensureColumn("descuento", "fecha_inicio", "timestamp with time zone DEFAULT CURRENT_TIMESTAMP");
+  await ensureColumn("descuento", "fecha_fin", "timestamp with time zone");
+  await ensureColumn("cupon", "id_patrocinador", "integer");
+  await ensureColumn("cupon", "fecha_inicio", "date");
+
+  await ensureTable(
+    "patrocinador",
+    `
+    CREATE TABLE patrocinador (
+      id_patrocinador SERIAL PRIMARY KEY,
+      nombre character varying(100) NOT NULL,
+      imagen_url character varying(500)
+    )
+    `,
+  );
+
+  await ensureTable(
+    "descuentoproducto",
+    `
+    CREATE TABLE descuentoproducto (
+      id_descuento integer NOT NULL REFERENCES descuento(id_descuento) ON DELETE CASCADE,
+      id_producto integer NOT NULL REFERENCES producto(id_producto) ON DELETE CASCADE,
+      PRIMARY KEY (id_descuento, id_producto)
+    )
+    `,
+  );
+};
+
 const parseId = (value) => {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
@@ -526,6 +671,36 @@ const serializeUser = (user) => {
   const plain = typeof user.get === "function" ? user.get({ plain: true }) : { ...user };
   delete plain.contrasena_hash;
   return plain;
+};
+
+const findLegacyUserId = async (identifier) => {
+  const normalizedIdentifier = normalizeLower(identifier);
+  if (!normalizedIdentifier) return null;
+
+  const [legacyColumns] = await sequelize.query(
+    `
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'usuario'
+      AND column_name = 'usuario'
+    LIMIT 1
+    `,
+  );
+
+  if (!legacyColumns.length) return null;
+
+  const [rows] = await sequelize.query(
+    `
+    SELECT id_usuario
+    FROM usuario
+    WHERE LOWER(TRIM(usuario)) = :identifier
+    LIMIT 1
+    `,
+    { replacements: { identifier: normalizedIdentifier } },
+  );
+
+  return rows[0]?.id_usuario || null;
 };
 
 const ensureCloudinaryConfigured = () => {
@@ -1262,19 +1437,32 @@ const loadCatalogsPayload = async () => {
 };
 
 app.post("/api/login", async (req, res) => {
-  const { email, contrasena } = req.body;
+  const email = normalizeLower(req.body?.email);
+  const plainPassword = String(req.body?.contrasena || "");
+
+  if (!email || !plainPassword) {
+    return res.status(400).json({ error: "Email y contrasena son obligatorios" });
+  }
 
   try {
-    const user = await Usuario.findOne({
-      where: { email: normalizeLower(email) },
+    let user = await Usuario.findOne({
+      where: { email },
       include: [{ model: Rol, as: "Rol", attributes: ROLE_ATTRIBUTES }],
     });
+
+    if (!user) {
+      const legacyUserId = await findLegacyUserId(email);
+      if (legacyUserId) {
+        user = await Usuario.findByPk(legacyUserId, {
+          include: [{ model: Rol, as: "Rol", attributes: ROLE_ATTRIBUTES }],
+        });
+      }
+    }
 
     if (!user) {
       return res.status(401).json({ error: "Credenciales invalidas" });
     }
 
-    const plainPassword = String(contrasena || "");
     const storedPassword = String(user.contrasena_hash || "");
     let passwordValid = false;
 
@@ -2152,8 +2340,8 @@ app.get("/api/admin/resenas", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY),
 });
 
 app.patch("/api/admin/resenas/:idResena", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), async (req, res) => {
-  const allowedStates = [REVIEW_STATUS_APPROVED, REVIEW_STATUS_REJECTED];
-  if (!allowedStates.includes(req.body.estado)) {
+  const nextStatus = normalizeReviewStatus(req.body.estado);
+  if (![REVIEW_STATUS_APPROVED, REVIEW_STATUS_REJECTED].includes(nextStatus)) {
     return res.status(400).json({ error: "Estado de resena invalido" });
   }
 
@@ -2164,12 +2352,12 @@ app.patch("/api/admin/resenas/:idResena", authMiddleware, requireRoles(STAFF_MIN
     }
 
     await review.update({
-      estado: req.body.estado,
+      estado: nextStatus,
       id_moderador: req.user.id_usuario,
       fecha_moderacion: new Date(),
     });
 
-    res.json({ message: `Resena marcada como ${req.body.estado}` });
+    res.json({ message: `Resena marcada como ${nextStatus}`, review });
   } catch {
     res.status(500).json({ error: "Error moderando resena" });
   }
@@ -2425,9 +2613,16 @@ app.put("/api/admin/catalogos/:catalogKey/:id", authMiddleware, requireRoles(STA
 });
 
 if (require.main === module) {
-  app.listen(PORT, () => {
-    console.log(`Backend activo en http://localhost:${PORT}`);
-  });
+  ensureDatabaseCompatibility()
+    .then(() => {
+      app.listen(PORT, () => {
+        console.log(`Backend activo en http://localhost:${PORT}`);
+      });
+    })
+    .catch((error) => {
+      console.error("No se pudo preparar la base de datos:", error);
+      process.exit(1);
+    });
 }
 
-module.exports = { app, sequelize };
+module.exports = { app, sequelize, ensureDatabaseCompatibility };
