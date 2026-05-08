@@ -823,6 +823,10 @@ const mapProduct = (productInstance) => {
       url: image.url,
       es_principal: image.es_principal,
     })),
+    Resenas: reviewList.map((review) => ({
+      ...review,
+      puntuacion: Number(review.puntuacion || 0),
+    })),
     precio: roundMoney(product.precio),
     precio_base: roundMoney(product.precio),
     stock: Number(product.stock || 0),
@@ -925,20 +929,23 @@ const assertNotEmpty = (value, message) => {
 };
 
 const getOrCreateCart = async (idUsuario, transaction) => {
-  let cart = await CarritoCabecera.findOne({
-    where: { id_usuario: idUsuario },
-    transaction,
-    lock: transaction ? true : undefined,
-  });
+  const [rows] = await sequelize.query(
+    `
+    INSERT INTO carritocabecera (id_usuario, fecha_actualizacion)
+    VALUES (:idUsuario, CURRENT_TIMESTAMP)
+    ON CONFLICT (id_usuario)
+    DO UPDATE SET fecha_actualizacion = CURRENT_TIMESTAMP
+    RETURNING id_carrito, id_usuario, fecha_actualizacion
+    `,
+    {
+      replacements: { idUsuario },
+      transaction,
+      model: CarritoCabecera,
+      mapToModel: true,
+    },
+  );
 
-  if (!cart) {
-    cart = await CarritoCabecera.create(
-      { id_usuario: idUsuario, fecha_actualizacion: new Date() },
-      { transaction },
-    );
-  }
-
-  return cart;
+  return rows[0];
 };
 
 const touchCart = (cart, transaction) =>
@@ -1853,29 +1860,56 @@ app.delete("/api/productos/:id", authMiddleware, requireRoles(STAFF_MIN_HIERARCH
 });
 
 app.post("/api/resenas", authMiddleware, async (req, res) => {
-  const { id_producto, puntuacion, comentario } = req.body;
-  if (!id_producto || !normalizeText(comentario) || !puntuacion) {
+  const idProducto = parseId(req.body.id_producto);
+  const puntuacion = Number(req.body.puntuacion);
+  const comentario = normalizeText(req.body.comentario);
+
+  if (!idProducto || !comentario || !Number.isInteger(puntuacion)) {
     return res.status(400).json({ error: "Producto, puntuacion y comentario son obligatorios" });
   }
 
+  if (puntuacion < 1 || puntuacion > 5) {
+    return res.status(400).json({ error: "La puntuacion debe estar entre 1 y 5" });
+  }
+
   try {
-    const product = await Producto.findByPk(id_producto);
+    const product = await Producto.findByPk(idProducto);
     if (!product || product.activo === false) {
       return res.status(404).json({ error: "Producto no encontrado" });
     }
 
-    const review = await Resena.create({
-      id_usuario: req.user.id_usuario,
-      id_producto,
-      puntuacion: Number(puntuacion),
-      comentario: normalizeText(comentario),
-      estado: REVIEW_STATUS_PENDING,
-      fecha_resena: new Date(),
+    const [review, created] = await Resena.findOrCreate({
+      where: {
+        id_usuario: req.user.id_usuario,
+        id_producto: idProducto,
+      },
+      defaults: {
+        id_usuario: req.user.id_usuario,
+        id_producto: idProducto,
+        puntuacion,
+        comentario,
+        estado: REVIEW_STATUS_PENDING,
+        fecha_resena: new Date(),
+      },
     });
 
-    res.status(201).json({ message: "Resena enviada para moderacion", review });
-  } catch {
-    res.status(500).json({ error: "Error publicando resena" });
+    if (!created) {
+      await review.update({
+        puntuacion,
+        comentario,
+        estado: REVIEW_STATUS_PENDING,
+        fecha_resena: new Date(),
+        id_moderador: null,
+        fecha_moderacion: null,
+      });
+    }
+
+    res.status(created ? 201 : 200).json({
+      message: created ? "Resena enviada para moderacion" : "Resena actualizada y enviada para moderacion",
+      review,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Error publicando resena" });
   }
 });
 
@@ -1891,7 +1925,7 @@ app.post("/api/carrito", authMiddleware, async (req, res) => {
   const quantityToAdd = Number(req.body.cantidad || 1);
   const productId = parseId(req.body.id_producto);
 
-  if (!productId || quantityToAdd < 1) {
+  if (!productId || !Number.isInteger(quantityToAdd) || quantityToAdd < 1) {
     return res.status(400).json({ error: "Producto y cantidad validos son requeridos" });
   }
 
@@ -1899,30 +1933,31 @@ app.post("/api/carrito", authMiddleware, async (req, res) => {
     await sequelize.transaction(async (transaction) => {
       const cart = await getOrCreateCart(req.user.id_usuario, transaction);
       const pricing = await resolveLinePricing(productId, transaction, true);
-      const existing = await CarritoDetalle.findOne({
-        where: { id_carrito: cart.id_carrito, id_producto: productId },
-        transaction,
-        lock: { level: transaction.LOCK.UPDATE, of: CarritoDetalle },
-      });
 
-      const nextQuantity = Number(existing?.cantidad || 0) + quantityToAdd;
+      const [rows] = await sequelize.query(
+        `
+        INSERT INTO carritodetalle (id_carrito, id_producto, cantidad)
+        VALUES (:idCarrito, :productId, :quantityToAdd)
+        ON CONFLICT (id_carrito, id_producto)
+        DO UPDATE SET cantidad = carritodetalle.cantidad + EXCLUDED.cantidad
+        RETURNING cantidad
+        `,
+        {
+          replacements: {
+            idCarrito: cart.id_carrito,
+            productId,
+            quantityToAdd,
+          },
+          transaction,
+        },
+      );
 
+      const nextQuantity = Number(rows[0]?.cantidad || 0);
       if (nextQuantity > pricing.stockAvailable) {
         const error = new Error("No hay stock suficiente para esa cantidad");
         error.status = 409;
         throw error;
       }
-
-      if (existing) {
-        await existing.update({ cantidad: nextQuantity }, { transaction });
-      } else {
-        await CarritoDetalle.create(
-          { id_carrito: cart.id_carrito, id_producto: productId, cantidad: quantityToAdd },
-          { transaction },
-        );
-      }
-
-      await touchCart(cart, transaction);
     });
 
     res.status(201).json(await buildCartPayload(req.user.id_usuario));
