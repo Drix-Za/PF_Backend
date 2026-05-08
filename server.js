@@ -606,6 +606,20 @@ const ensureDatabaseCompatibility = async () => {
   await ensureColumn("direccion", "referencia", "text");
   await ensureColumn("pedido", "id_direccion", "integer");
 
+  await ensureColumn("resena", "estado", "character varying(30) DEFAULT 'Pendiente'");
+  await ensureColumn("resena", "id_moderador", "integer");
+  await ensureColumn("resena", "fecha_moderacion", "timestamp with time zone");
+  await ensureColumn("resena", "fecha_resena", "timestamp with time zone DEFAULT CURRENT_TIMESTAMP");
+  await sequelize.query(
+    `
+    UPDATE resena
+    SET estado = :pendingStatus
+    WHERE estado IS NULL
+       OR TRIM(estado) = ''
+    `,
+    { replacements: { pendingStatus: REVIEW_STATUS_PENDING } },
+  );
+
   await ensureColumn("descuento", "fecha_inicio", "timestamp with time zone DEFAULT CURRENT_TIMESTAMP");
   await ensureColumn("descuento", "fecha_fin", "timestamp with time zone");
   await ensureColumn("cupon", "id_patrocinador", "integer");
@@ -2323,9 +2337,12 @@ app.patch("/api/admin/pedidos/:idPedido/estado", authMiddleware, requireRoles(ST
   }
 });
 
-app.get("/api/admin/resenas", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), async (_req, res) => {
+app.get("/api/admin/resenas", authMiddleware, requireRoles(STAFF_MIN_HIERARCHY), async (req, res) => {
   try {
+    const requestedStatus = normalizeReviewStatus(req.query.estado);
+    const where = requestedStatus ? { estado: requestedStatus } : {};
     const reviews = await Resena.findAll({
+      where,
       include: [
         { model: Usuario, as: "Usuario", attributes: ["id_usuario", "nombre", "apellido", "email"] },
         { model: Producto, as: "Producto", include: publicProductInclude },
